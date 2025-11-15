@@ -1,0 +1,10 @@
+from string import Template
+
+CONFIRMACAO = Template(
+    "Oi, $primeiro_nome! 💚\n"
+    "Sua consulta foi confirmada para $data_agenda às $hora_agenda, com $nome_profissional.\n"
+    "Procedimento(s): $procedimentos\n"
+    "Endereço: $endereco_clinica\n\n"
+    "Se tiver alguma dúvida, responda essa mensagem."
+)
+
