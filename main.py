@@ -28,7 +28,29 @@ def extrair_primeiro_nome(fullname):
     return partes[0] if partes else ""
 
 
-def processar_intervalo(data_inicial, data_final):
+def formatar_data_brasileira(data_str):
+    """
+    Formata data de YYYY-MM-DD para DD/MM/YYYY.
+    
+    Args:
+        data_str: Data no formato YYYY-MM-DD
+        
+    Returns:
+        Data formatada como DD/MM/YYYY ou string original se inválida
+    """
+    if not data_str or data_str == "N/A":
+        return data_str
+    
+    try:
+        # Tenta parsear como YYYY-MM-DD
+        data_obj = datetime.datetime.strptime(data_str, "%Y-%m-%d")
+        return data_obj.strftime("%d/%m/%Y")
+    except (ValueError, TypeError):
+        # Se não conseguir parsear, retorna como está
+        return data_str
+
+
+def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
     """
     Processa todos os agendamentos entre as datas fornecidas.
     
@@ -38,11 +60,18 @@ def processar_intervalo(data_inicial, data_final):
     Args:
         data_inicial: Data inicial no formato YYYY-MM-DD
         data_final: Data final no formato YYYY-MM-DD
+        ciclo_numero: Número do ciclo atual (opcional, para logs)
     """
-    logger.info(f"Iniciando processamento de agendamentos: {data_inicial} a {data_final}")
+    ciclo_prefix = f"[CICLO #{ciclo_numero}] " if ciclo_numero else ""
     
-    pagina = 1
+    logger.info("=" * 70)
+    logger.info(f"{ciclo_prefix}🔍 INICIANDO BUSCA DE AGENDAMENTOS: {data_inicial} a {data_final}")
+    logger.info("=" * 70)
+    
+    pagina = 0  # API começa a paginação em 0, não em 1
     total_processados = 0
+    total_novos_encontrados = 0
+    total_ja_processados = 0
     
     while True:
         try:
@@ -77,35 +106,78 @@ def processar_intervalo(data_inicial, data_final):
                         logger.warning("Agendamento sem ID encontrado, ignorando")
                         continue
                     
+                    # Extrai informações básicas para log (antes de verificar processamento)
+                    nome_paciente = (
+                        ag.get("paciente_nome") or
+                        ag.get("nomePaciente") or
+                        ag.get("primeiro_nome_do_paciente") or
+                        ag.get("pacienteNome") or
+                        "N/A"
+                    )
+                    data_agenda = ag.get("data") or ag.get("dataAgenda") or "N/A"
+                    hora_agenda = (
+                        ag.get("horaInicio") or
+                        ag.get("hora") or
+                        ag.get("hora_inicio") or
+                        "N/A"
+                    )
+                    nome_prof = (
+                        ag.get("nome_profissional") or
+                        ag.get("profissional") or
+                        ag.get("nomeProfissional") or
+                        "N/A"
+                    )
+                    
                     # Verifica se já foi processado
                     if is_processed(ag_id):
-                        logger.debug(f"Agendamento {ag_id} já foi processado, ignorando")
+                        total_ja_processados += 1
+                        logger.info(
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"{ciclo_prefix}⏭️  AGENDAMENTO JÁ PROCESSADO\n"
+                            f"   ID: {ag_id}\n"
+                            f"   Paciente: {nome_paciente}\n"
+                            f"   Data/Hora: {data_agenda} às {hora_agenda}\n"
+                            f"   Profissional: {nome_prof}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        )
                         continue
+                    
+                    total_novos_encontrados += 1
+                    # Log do agendamento NOVO encontrado
+                    logger.info(
+                        f"\n{'='*70}\n"
+                        f"{ciclo_prefix}📋 NOVO AGENDAMENTO ENCONTRADO\n"
+                        f"{'='*70}\n"
+                        f"   ID: {ag_id}\n"
+                        f"   Paciente: {nome_paciente}\n"
+                        f"   Data/Hora: {data_agenda} às {hora_agenda}\n"
+                        f"   Profissional: {nome_prof}\n"
+                        f"{'-'*70}"
+                    )
                     
                     try:
                         # Extrai dados com fallbacks para diferentes nomes de campos
-                        nome_completo = (
-                            ag.get("paciente_nome") or
-                            ag.get("nomePaciente") or
-                            ag.get("primeiro_nome_do_paciente") or
-                            ag.get("pacienteNome") or
-                            ""
-                        )
+                        # (já extraímos acima para o log, mas mantemos aqui para consistência)
+                        nome_completo = nome_paciente if nome_paciente != "N/A" else ""
                         primeiro_nome = extrair_primeiro_nome(nome_completo)
                         
-                        data_agenda = ag.get("data") or ag.get("dataAgenda") or ""
-                        hora_agenda = (
-                            ag.get("horaInicio") or
-                            ag.get("hora") or
-                            ag.get("hora_inicio") or
-                            ""
-                        )
-                        nome_prof = (
-                            ag.get("nome_profissional") or
-                            ag.get("profissional") or
-                            ag.get("nomeProfissional") or
-                            ""
-                        )
+                        # Usa os valores já extraídos acima (ou extrai novamente se necessário)
+                        if data_agenda == "N/A":
+                            data_agenda = ag.get("data") or ag.get("dataAgenda") or ""
+                        if hora_agenda == "N/A":
+                            hora_agenda = (
+                                ag.get("horaInicio") or
+                                ag.get("hora") or
+                                ag.get("hora_inicio") or
+                                ""
+                            )
+                        if nome_prof == "N/A":
+                            nome_prof = (
+                                ag.get("nome_profissional") or
+                                ag.get("profissional") or
+                                ag.get("nomeProfissional") or
+                                ""
+                            )
                         
                         # Processa procedimentos
                         procedimentos = (
@@ -115,7 +187,18 @@ def processar_intervalo(data_inicial, data_final):
                             []
                         )
                         if isinstance(procedimentos, list):
-                            procedimentos_texto = ", ".join([str(p) for p in procedimentos if p])
+                            # Procedimentos podem ser strings ou objetos com campo "nome"
+                            nomes_procedimentos = []
+                            for p in procedimentos:
+                                if isinstance(p, dict):
+                                    # Se é um objeto, pega o campo "nome"
+                                    nome = p.get("nome") or p.get("nomeProcedimento") or str(p)
+                                    if nome:
+                                        nomes_procedimentos.append(nome)
+                                elif p:
+                                    # Se é uma string ou outro tipo
+                                    nomes_procedimentos.append(str(p))
+                            procedimentos_texto = ", ".join(nomes_procedimentos) if nomes_procedimentos else ""
                         else:
                             procedimentos_texto = str(procedimentos) if procedimentos else ""
                         
@@ -139,22 +222,42 @@ def processar_intervalo(data_inicial, data_final):
                         numero = "".join([c for c in str(numero) if c.isdigit()])
                         
                         if not numero:
-                            logger.warning(f"Agendamento {ag_id} sem número de telefone válido, ignorando")
+                            logger.warning(
+                                f"{ciclo_prefix}⚠️  AVISO: Sem número de telefone válido\n"
+                                f"   ⏭️  Agendamento ignorado (não será processado)\n"
+                                f"{'='*70}\n"
+                            )
                             continue
+                        
+                        # Formata data para formato brasileiro (DD/MM/YYYY)
+                        data_formatada = formatar_data_brasileira(data_agenda)
                         
                         # Monta mensagem usando template
                         try:
                             texto = CONFIRMACAO.substitute(
-                                primeiro_nome=primeiro_nome or "Olá",
-                                data_agenda=data_agenda,
+                                primeiro_nome=primeiro_nome or "Sou o Assistente da WeClinic",
+                                data_agenda=data_formatada,
                                 hora_agenda=hora_agenda,
-                                nome_profissional=nome_prof or "o profissional",
-                                procedimentos=procedimentos_texto,
-                                endereco_clinica=endereco or "não informado"
+                                procedimentos=procedimentos_texto
                             )
                         except KeyError as e:
-                            logger.error(f"Erro ao substituir variável no template: {e}")
+                            logger.error(
+                                f"{ciclo_prefix}❌ ERRO: Falha ao processar template da mensagem\n"
+                                f"   🔍 Variável faltando: {e}\n"
+                                f"   ⏭️  Agendamento ignorado\n"
+                                f"{'='*70}\n"
+                            )
                             continue
+                        
+                        # Log detalhes do agendamento antes de enviar
+                        logger.info(
+                            f"   📱 Telefone: {numero}\n"
+                            f"   📋 Procedimentos: {procedimentos_texto}\n"
+                            f"   📅 Data: {data_formatada} às {hora_agenda}\n"
+                            f"{'-'*70}\n"
+                            f"{ciclo_prefix}📤 Enviando mensagem de confirmação...\n"
+                            f"{'-'*70}"
+                        )
                         
                         # Envia mensagem
                         ok = enviar_mensagem(numero, texto)
@@ -162,12 +265,29 @@ def processar_intervalo(data_inicial, data_final):
                         if ok:
                             mark_processed(ag_id)
                             total_processados += 1
-                            logger.info(f"Agendamento {ag_id} processado e mensagem enviada para {numero}")
+                            logger.info(
+                                f"{ciclo_prefix}✅ SUCESSO: Mensagem enviada com sucesso!\n"
+                                f"   📱 Destinatário: {numero}\n"
+                                f"   ✅ Agendamento marcado como processado\n"
+                                f"{'='*70}\n"
+                            )
                         else:
-                            logger.warning(f"Falha ao enviar mensagem para agendamento {ag_id}, não marcando como processado")
+                            logger.warning(
+                                f"{ciclo_prefix}❌ FALHA: Erro ao enviar mensagem\n"
+                                f"   📱 Destinatário: {numero}\n"
+                                f"   ⚠️  Agendamento NÃO marcado como processado\n"
+                                f"   🔄 Será tentado novamente no próximo ciclo\n"
+                                f"{'='*70}\n"
+                            )
                     
                     except Exception as e:
-                        logger.error(f"Erro ao processar agendamento {ag_id}: {e}", exc_info=True)
+                        logger.error(
+                            f"{ciclo_prefix}❌ ERRO CRÍTICO ao processar agendamento {ag_id}\n"
+                            f"   🔍 Erro: {e}\n"
+                            f"   ⏭️  Continuando com próximo agendamento\n"
+                            f"{'='*70}\n",
+                            exc_info=True
+                        )
                         continue
             
             # Determina se deve continuar paginando
@@ -197,7 +317,14 @@ def processar_intervalo(data_inicial, data_final):
                 logger.error("Limite de páginas excedido, abortando")
                 break
     
-    logger.info(f"Processamento concluído. Total de agendamentos processados: {total_processados}")
+    logger.info("\n" + "=" * 70)
+    logger.info(f"{ciclo_prefix}📊 RESUMO DO PROCESSAMENTO")
+    logger.info("=" * 70)
+    logger.info(f"{ciclo_prefix}📋 Novos agendamentos encontrados: {total_novos_encontrados}")
+    logger.info(f"{ciclo_prefix}⏭️  Agendamentos já processados: {total_ja_processados}")
+    logger.info(f"{ciclo_prefix}✅ Mensagens enviadas com sucesso: {total_processados}")
+    logger.info(f"{ciclo_prefix}❌ Falhas no envio: {total_novos_encontrados - total_processados}")
+    logger.info("=" * 70 + "\n")
 
 
 if __name__ == "__main__":

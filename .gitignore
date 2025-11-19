@@ -1,6 +1,7 @@
 .env
 storage.db
 venv/
+*.db
 __pycache__/
 *.pyc
 *.pyo

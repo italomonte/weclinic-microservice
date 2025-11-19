@@ -80,6 +80,9 @@ API_USER=seu_user_basic_auth
 API_PASS=sua_senha_basic_auth
 CLINICA_CID=client_secret_aqui
 
+# Banco de Dados PostgreSQL (Neon)
+DATABASE_URL=postgresql://usuario:senha@host:porta/database?sslmode=require
+
 # Provedor de Mensagens
 SENDER_API_URL=https://meu-provedor.com/send
 SENDER_AUTH=Bearer_xxx
@@ -119,34 +122,58 @@ Baseado na tela de configuração da API:
    - Ou clique em "Alterar token" para gerar um novo
    - Este valor vai no header da requisição HTTP
 
-5. **`SENDER_PROVIDER`**: Tipo de provedor (opcional, padrão: `generic`)
+5. **`DATABASE_URL`**: URL de conexão PostgreSQL (Neon ou outro)
+
+   - Formato: `postgresql://usuario:senha@host:porta/database?sslmode=require`
+   - Copie a connection string completa do seu banco Neon
+   - Exemplo: `postgresql://user:pass@ep-xxx.aws.neon.tech/db?sslmode=require`
+   - O sistema criará automaticamente a tabela `processed` na primeira execução
+
+6. **`SENDER_PROVIDER`**: Tipo de provedor (opcional, padrão: `generic`)
 
    - `evolution` - Para Evolution API
    - `whatsapp_cloud` - Para WhatsApp Cloud API
    - `generic` - Para outros provedores genéricos
 
-6. **`SENDER_API_URL`**: URL do seu provedor de mensagens
+7. **`SENDER_API_URL`**: URL do seu provedor de mensagens
 
    - **Evolution API**: `http://seu-servidor:8080/message/sendText/NOME_DA_INSTANCIA`
    - **WhatsApp Cloud API**: `https://graph.facebook.com/v18.0/SEU_PHONE_NUMBER_ID/messages`
    - **Outros**: URL conforme documentação do provedor
 
-7. **`SENDER_AUTH`**: Token de autenticação do provedor
+8. **`SENDER_AUTH`**: Token de autenticação do provedor
 
    - **Evolution API**: Sua API Key (ex: `sua_api_key_aqui`) ou `Bearer sua_api_key_aqui`
    - **WhatsApp Cloud API**: `Bearer SEU_ACCESS_TOKEN`
    - **Outros**: Formato conforme documentação
 
-8. **`INTERVAL_MIN`**: Intervalo em minutos entre execuções (padrão: 5)
+9. **`SENDER_MAX_RETRIES`**: Número de tentativas em caso de erro temporário (opcional, padrão: 3)
 
-9. **`WEBHOOK_VERIFY_TOKEN`**: Token secreto para verificação do webhook (OPCIONAL)
+   - Sistema tenta novamente automaticamente em caso de erros 500, 502, 503, 504, 429, timeout ou erro de conexão
+   - Padrão: `3` tentativas
 
-   - Você inventa esse valor (ex: `minha_chave_secreta_123`)
-   - Só necessário se for usar webhook (receber callbacks do provedor)
-   - Se usar Evolution API apenas para enviar: NÃO precisa configurar
-   - Veja seção "Webhook - Para que serve?" abaixo para mais detalhes
+10. **`SENDER_RETRY_DELAY`**: Segundos de espera entre tentativas (opcional, padrão: 2)
 
-10. **`WEBHOOK_PORT`**: Porta onde o webhook vai rodar (OPCIONAL, padrão: 5000)
+- Tempo de espera antes de tentar novamente após um erro temporário
+- Padrão: `2` segundos
+
+11. **`INTERVAL_MIN`**: Intervalo em minutos entre execuções (padrão: 5)
+
+12. **`DAYS_AHEAD`**: Quantos dias à frente buscar agendamentos (padrão: 0 = só hoje)
+
+- `0` = Busca apenas agendamentos de hoje
+- `7` = Busca agendamentos de hoje até 7 dias à frente
+- `30` = Busca agendamentos de hoje até 30 dias à frente
+- Útil para enviar confirmações antecipadas para próximos dias
+
+13. **`WEBHOOK_VERIFY_TOKEN`**: Token secreto para verificação do webhook (OPCIONAL)
+
+- Você inventa esse valor (ex: `minha_chave_secreta_123`)
+- Só necessário se for usar webhook (receber callbacks do provedor)
+- Se usar Evolution API apenas para enviar: NÃO precisa configurar
+- Veja seção "Webhook - Para que serve?" abaixo para mais detalhes
+
+14. **`WEBHOOK_PORT`**: Porta onde o webhook vai rodar (OPCIONAL, padrão: 5000)
 
     - Só necessário se for usar webhook
     - Padrão: `5000`
@@ -161,6 +188,9 @@ API_USER=apiCnn
 API_PASS=7eb16006265aak53998j9oinnnolko529d3448091416aba7c7784e5f681
 CLINICA_CID=cole_aqui_o_token_hash_da_tela
 
+# Banco de Dados PostgreSQL (Neon)
+DATABASE_URL=postgresql://usuario:senha@host:porta/database?sslmode=require
+
 # Provedor de Mensagens - Evolution API
 SENDER_PROVIDER=evolution
 SENDER_API_URL=http://seu-servidor-evolution:8080/message/sendText/MinhaInstancia
@@ -168,6 +198,7 @@ SENDER_AUTH=sua_api_key_evolution
 
 # Configuração do Scheduler
 INTERVAL_MIN=5
+DAYS_AHEAD=0  # Quantos dias à frente buscar (0 = só hoje, 7 = próxima semana, etc)
 
 # Webhook (opcional - só necessário se quiser receber callbacks do provedor)
 WEBHOOK_VERIFY_TOKEN=meu_token_secreto_123
@@ -193,6 +224,54 @@ INTERVAL_MIN=5
 ```
 
 ## 🚀 Uso
+
+### ⚠️ IMPORTANTE: Inicialização do Banco (Primeira Execução)
+
+Se você está iniciando o sistema em uma clínica que **já tem agendamentos existentes**,
+execute PRIMEIRO o script de inicialização para evitar enviar mensagens para agendamentos antigos:
+
+```bash
+source venv/bin/activate
+python3 init_db.py
+```
+
+Este script vai:
+
+- ✅ Buscar TODOS os agendamentos existentes na API
+- ✅ Marcar como processados SEM enviar mensagens
+- ✅ A partir daí, só enviará mensagens para agendamentos NOVOS
+
+**Opções:**
+
+```bash
+# Inicializar últimos 60 dias (padrão)
+python3 init_db.py
+
+# Inicializar período específico
+python3 init_db.py 2025-01-01 2025-12-31
+
+# Inicializar até uma data específica (60 dias antes dela)
+python3 init_db.py 2025-12-31
+```
+
+### Visualizar Banco de Dados
+
+Para visualizar o conteúdo do banco `.db`:
+
+```bash
+# Usando o script Python
+python3 view_db.py
+
+# Ou usando SQLite diretamente no terminal
+sqlite3 storage.db
+sqlite> SELECT * FROM processed;
+sqlite> SELECT COUNT(*) FROM processed;
+sqlite> .quit
+
+# Ou usando ferramenta gráfica
+# - DB Browser for SQLite (https://sqlitebrowser.org/)
+# - Abra o arquivo storage.db na ferramenta
+```
 
 ### Teste Local
 
@@ -383,18 +462,22 @@ WantedBy=multi-user.target
 
 ### Variáveis de Ambiente
 
-| Variável               | Descrição                                             | Obrigatório           |
-| ---------------------- | ----------------------------------------------------- | --------------------- |
-| `API_BASE`             | URL base da API (sem /lista)                          | Sim                   |
-| `API_USER`             | Usuário para Basic Auth                               | Sim                   |
-| `API_PASS`             | Senha para Basic Auth                                 | Sim                   |
-| `CLINICA_CID`          | Client secret da clínica                              | Sim                   |
-| `SENDER_PROVIDER`      | Tipo de provedor (evolution, whatsapp_cloud, generic) | Não (padrão: generic) |
-| `SENDER_API_URL`       | URL do provedor de mensagens                          | Sim                   |
-| `SENDER_AUTH`          | Token/Bearer de autenticação                          | Sim                   |
-| `INTERVAL_MIN`         | Intervalo entre execuções (minutos)                   | Não (padrão: 5)       |
-| `WEBHOOK_VERIFY_TOKEN` | Token de verificação do webhook (opcional)            | Não                   |
-| `WEBHOOK_PORT`         | Porta do webhook (opcional)                           | Não (padrão: 5000)    |
+| Variável               | Descrição                                             | Obrigatório               |
+| ---------------------- | ----------------------------------------------------- | ------------------------- |
+| `API_BASE`             | URL base da API (sem /lista)                          | Sim                       |
+| `API_USER`             | Usuário para Basic Auth                               | Sim                       |
+| `API_PASS`             | Senha para Basic Auth                                 | Sim                       |
+| `CLINICA_CID`          | Client secret da clínica                              | Sim                       |
+| `DATABASE_URL`         | URL de conexão PostgreSQL (Neon ou outro)             | Sim                       |
+| `SENDER_PROVIDER`      | Tipo de provedor (evolution, whatsapp_cloud, generic) | Não (padrão: generic)     |
+| `SENDER_API_URL`       | URL do provedor de mensagens                          | Sim                       |
+| `SENDER_AUTH`          | Token/Bearer de autenticação                          | Sim                       |
+| `SENDER_MAX_RETRIES`   | Número de tentativas em caso de erro (opcional)       | Não (padrão: 3)           |
+| `SENDER_RETRY_DELAY`   | Segundos entre tentativas (opcional)                  | Não (padrão: 2)           |
+| `INTERVAL_MIN`         | Intervalo entre execuções (minutos)                   | Não (padrão: 5)           |
+| `DAYS_AHEAD`           | Quantos dias à frente buscar agendamentos             | Não (padrão: 0 = só hoje) |
+| `WEBHOOK_VERIFY_TOKEN` | Token de verificação do webhook (opcional)            | Não                       |
+| `WEBHOOK_PORT`         | Porta do webhook (opcional)                           | Não (padrão: 5000)        |
 
 ### Webhook - Para que serve?
 
@@ -572,14 +655,21 @@ Verifique se o caminho do Python está correto no arquivo `.service`:
 - Verifique os logs para erros específicos do provedor
 - Teste manualmente o endpoint do provedor com curl
 
-### Banco de dados corrompido
+### Banco de dados corrompido ou resetar
 
-Para resetar o banco de dados:
+Para limpar o banco de dados:
 
 ```bash
-rm storage.db
-# Na próxima execução, será criado automaticamente
+# Usando o script Python
+python3 clear_db.py
+
+# Ou conectar diretamente ao PostgreSQL
+psql "DATABASE_URL"
+psql> DELETE FROM processed;
+psql> \q
 ```
+
+A tabela será recriada automaticamente na próxima execução se necessário.
 
 ## 🔄 Atualizações
 

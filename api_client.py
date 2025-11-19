@@ -14,14 +14,14 @@ PASS = os.getenv("API_PASS")
 CLINICA_CID = os.getenv("CLINICA_CID")
 
 
-def fetch_agendamentos(data_inicial, data_final, pagina=1):
+def fetch_agendamentos(data_inicial, data_final, pagina=0):
     """
     Busca agendamentos da API da Clínica nas Nuvens.
     
     Args:
         data_inicial: Data inicial no formato YYYY-MM-DD
         data_final: Data final no formato YYYY-MM-DD
-        pagina: Número da página (padrão: 1)
+        pagina: Número da página (padrão: 0, pois a API começa em 0)
         
     Returns:
         JSON com a resposta da API

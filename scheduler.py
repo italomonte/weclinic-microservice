@@ -1,6 +1,7 @@
 import time
 import os
 import datetime
+from datetime import datetime as dt
 from dotenv import load_dotenv
 import logging
 from storage import init_db
@@ -15,6 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 INTERVAL_MIN = int(os.getenv("INTERVAL_MIN", "5"))
+DAYS_AHEAD = int(os.getenv("DAYS_AHEAD", "60"))  # Quantos dias à frente buscar (0 = só hoje)
 
 
 def run_forever():
@@ -22,21 +24,35 @@ def run_forever():
     Loop infinito que executa processar_intervalo periodicamente.
     
     Intervalo é configurável via variável de ambiente INTERVAL_MIN (em minutos).
-    Por padrão processa agendamentos do dia atual.
+    Por padrão processa agendamentos do dia atual, mas pode buscar dias futuros
+    configurando DAYS_AHEAD no .env.
     """
     logger.info(f"Iniciando scheduler com intervalo de {INTERVAL_MIN} minutos")
+    if DAYS_AHEAD > 0:
+        logger.info(f"Buscando agendamentos para hoje + {DAYS_AHEAD} dias à frente")
+    else:
+        logger.info("Buscando agendamentos apenas para hoje")
     init_db()
+    
+    ciclo_numero = 0
     
     while True:
         try:
-            hoje = datetime.date.today().isoformat()
-            logger.info(f"Iniciando ciclo de processamento para {hoje}")
+            ciclo_numero += 1
+            hoje = datetime.date.today()
+            data_inicial = hoje.isoformat()
+            data_final = (hoje + datetime.timedelta(days=DAYS_AHEAD)).isoformat()
             
-            # Por padrão processa hoje, mas pode ser ajustado para
-            # processar próximos N dias se necessário
-            processar_intervalo(hoje, hoje)
+            logger.info("")
+            logger.info("🔄" + "=" * 68)
+            logger.info(f"🔄 CICLO #{ciclo_numero} - {dt.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("🔄" + "=" * 68)
             
-            logger.info(f"Ciclo concluído. Aguardando {INTERVAL_MIN} minutos para próximo ciclo")
+            processar_intervalo(data_inicial, data_final, ciclo_numero)
+            
+            logger.info("")
+            logger.info(f"⏳ Próximo ciclo em {INTERVAL_MIN} minutos...")
+            logger.info("")
         
         except KeyboardInterrupt:
             logger.info("Scheduler interrompido pelo usuário")
