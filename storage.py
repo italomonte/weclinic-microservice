@@ -1,8 +1,6 @@
 import os
 import psycopg2
-from psycopg2 import pool, sql
-from psycopg2.extras import RealDictCursor
-from contextlib import closing
+from psycopg2 import pool
 import logging
 from dotenv import load_dotenv
 
@@ -56,13 +54,25 @@ def init_db():
             with conn.cursor() as cur:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS processed (
-                        id BIGINT PRIMARY KEY,
-                        tipo VARCHAR(50),
+                        id BIGINT NOT NULL,
+                        tipo VARCHAR(50) DEFAULT 'agendamento',
                         criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 conn.commit()
-                logger.info("Banco de dados PostgreSQL inicializado com sucesso")
+
+                # Garante default e não-nulo para a coluna tipo
+                cur.execute("ALTER TABLE processed ALTER COLUMN tipo SET DEFAULT 'agendamento'")
+                cur.execute("UPDATE processed SET tipo = 'agendamento' WHERE tipo IS NULL")
+                cur.execute("ALTER TABLE processed ALTER COLUMN tipo SET NOT NULL")
+                conn.commit()
+
+                # Ajusta chave primária para permitir múltiplos tipos por ID
+                cur.execute("ALTER TABLE processed DROP CONSTRAINT IF EXISTS processed_pkey")
+                cur.execute("ALTER TABLE processed ADD CONSTRAINT processed_pkey PRIMARY KEY (id, tipo)")
+                conn.commit()
+
+                logger.info("Banco de dados PostgreSQL inicializado com sucesso (schema verificado)")
         finally:
             return_connection(conn)
     except Exception as e:
@@ -70,12 +80,14 @@ def init_db():
         raise
 
 
-def is_processed(item_id):
+def is_processed(item_id, tipo=None):
     """
     Verifica se um ID já foi processado.
     
     Args:
         item_id: ID do agendamento
+        tipo: Tipo específico do processamento (agendamento, cancelamento, etc.)
+              Se None, verifica se existe em QUALQUER tipo
         
     Returns:
         True se já foi processado, False caso contrário
@@ -88,7 +100,12 @@ def is_processed(item_id):
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT 1 FROM processed WHERE id = %s", (item_id,))
+                if tipo is None:
+                    # Verifica se existe em qualquer tipo
+                    cur.execute("SELECT 1 FROM processed WHERE id = %s", (item_id,))
+                else:
+                    # Verifica tipo específico
+                    cur.execute("SELECT 1 FROM processed WHERE id = %s AND tipo = %s", (item_id, tipo))
                 return cur.fetchone() is not None
         finally:
             return_connection(conn)
@@ -113,7 +130,7 @@ def mark_processed(item_id, tipo='agendamento'):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO processed (id, tipo) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
+                    "INSERT INTO processed (id, tipo) VALUES (%s, %s) ON CONFLICT (id, tipo) DO NOTHING",
                     (item_id, tipo)
                 )
                 conn.commit()
