@@ -1,9 +1,9 @@
 import datetime
 import logging
 from api_client import fetch_agendamentos
-from storage import init_db, is_processed, mark_processed
+from storage import init_db, is_processed, mark_processed, get_processed_data
 from sender import enviar_mensagem
-from templates import CONFIRMACAO, CANCELAMENTO
+from templates import CONFIRMACAO, CANCELAMENTO, REAGENDAMENTO
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,7 +16,28 @@ CANCELAMENTO_KEYWORD = "CANCELADO"
 CONFIRMADO_KEYWORD = "CONFIRMADO"
 
 # TESTE: Número permitido para envio de mensagens (apenas para testes)
+# Pode estar com ou sem o prefixo 55 - será normalizado na comparação
 NUMERO_TESTE = "92984532273"  # Remove ou comente esta linha para permitir todos os números
+
+
+def normalizar_numero_para_comparacao(numero):
+    """
+    Normaliza número de telefone para comparação, removendo prefixo 55 se existir.
+    
+    Args:
+        numero: Número de telefone (pode ter prefixo 55 ou não)
+        
+    Returns:
+        Número normalizado (apenas dígitos, sem prefixo 55)
+    """
+    if not numero:
+        return ""
+    # Remove todos os caracteres não numéricos
+    numero_limpo = "".join([c for c in str(numero) if c.isdigit()])
+    # Remove prefixo 55 se existir
+    if numero_limpo.startswith("55") and len(numero_limpo) > 11:
+        numero_limpo = numero_limpo[2:]
+    return numero_limpo
 
 
 def extrair_primeiro_nome(fullname):
@@ -129,6 +150,8 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
     pagina = 0  # API começa a paginação em 0, não em 1
     total_processados = 0
     total_novos_encontrados = 0
+    total_reagendamentos_detectados = 0
+    total_reagendamentos_enviados = 0
     total_ja_processados = 0
     total_cancelamentos_encontrados = 0
     total_cancelamentos_notificados = 0
@@ -266,11 +289,15 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                         )
 
                         # TESTE: Verifica se é o número permitido para testes (só antes de enviar)
-                        if numero != NUMERO_TESTE:
+                        numero_normalizado = normalizar_numero_para_comparacao(numero)
+                        numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
+                        
+                        if numero_normalizado != numero_teste_normalizado:
                             logger.info(
                                 f"{ciclo_prefix}🧪 TESTE: Cancelamento não enviado (número {numero} não é o número de teste)\n"
                                 f"   ID: {ag_id}\n"
-                                f"   Número permitido apenas: {NUMERO_TESTE}\n"
+                                f"   Número recebido (normalizado): {numero_normalizado}\n"
+                                f"   Número de teste (normalizado): {numero_teste_normalizado}\n"
                                 f"   Mensagem montada mas não enviada\n"
                                 f"{'='*70}\n"
                             )
@@ -307,33 +334,70 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                         )
                         continue
 
-                    # Verifica se já foi processado (confirmação)
+                    # Inicializa variável de reagendamento
+                    eh_reagendamento = False
+                    data_anterior = None
+                    hora_anterior = None
+                    
+                    # Verifica se já foi processado e se houve reagendamento
                     if is_processed(ag_id):
-                        total_ja_processados += 1
+                        # Busca a data/hora armazenada anteriormente
+                        data_anterior, hora_anterior = get_processed_data(ag_id, tipo='agendamento')
+                        
+                        # Normaliza data e hora atual para comparação
+                        data_atual_str = str(data_agenda).strip() if data_agenda != "N/A" else ""
+                        hora_atual_str = str(hora_agenda).strip() if hora_agenda != "N/A" else ""
+                        
+                        # Verifica se houve reagendamento (data ou hora diferentes)
+                        if data_anterior and hora_anterior:
+                            data_anterior_str = str(data_anterior)
+                            hora_anterior_str = str(hora_anterior)[:5]  # Apenas HH:MM para comparação
+                            hora_atual_comparacao = hora_atual_str[:5] if len(hora_atual_str) >= 5 else hora_atual_str
+                            
+                            if data_atual_str != data_anterior_str or hora_atual_comparacao != hora_anterior_str:
+                                eh_reagendamento = True
+                        
+                        if not eh_reagendamento:
+                            # Agendamento já processado sem mudanças
+                            total_ja_processados += 1
+                            logger.info(
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"{ciclo_prefix}⏭️  AGENDAMENTO JÁ PROCESSADO\n"
+                                f"   ID: {ag_id}\n"
+                                f"   Paciente: {nome_paciente}\n"
+                                f"   Data/Hora: {data_agenda} às {hora_agenda}\n"
+                                f"   Status: {status_texto or 'N/A'}\n"
+                                f"   Profissional: {nome_prof}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            )
+                            continue
+                        else:
+                            # Detectou reagendamento - log e continua processamento
+                            total_reagendamentos_detectados += 1
+                            logger.info(
+                                f"\n{'='*70}\n"
+                                f"{ciclo_prefix}🔄 REAGENDAMENTO DETECTADO\n"
+                                f"{'='*70}\n"
+                                f"   ID: {ag_id}\n"
+                                f"   Paciente: {nome_paciente}\n"
+                                f"   Data/Hora anterior: {data_anterior} às {hora_anterior}\n"
+                                f"   Data/Hora nova: {data_agenda} às {hora_agenda}\n"
+                                f"{'-'*70}"
+                            )
+                    
+                    if not eh_reagendamento:
+                        total_novos_encontrados += 1
+                        # Log do agendamento NOVO encontrado
                         logger.info(
-                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"{ciclo_prefix}⏭️  AGENDAMENTO JÁ PROCESSADO\n"
+                            f"\n{'='*70}\n"
+                            f"{ciclo_prefix}📋 NOVO AGENDAMENTO ENCONTRADO\n"
+                            f"{'='*70}\n"
                             f"   ID: {ag_id}\n"
                             f"   Paciente: {nome_paciente}\n"
                             f"   Data/Hora: {data_agenda} às {hora_agenda}\n"
-                            f"   Status: {status_texto or 'N/A'}\n"
                             f"   Profissional: {nome_prof}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            f"{'-'*70}"
                         )
-                        continue
-                    
-                    total_novos_encontrados += 1
-                    # Log do agendamento NOVO encontrado
-                    logger.info(
-                        f"\n{'='*70}\n"
-                        f"{ciclo_prefix}📋 NOVO AGENDAMENTO ENCONTRADO\n"
-                        f"{'='*70}\n"
-                        f"   ID: {ag_id}\n"
-                        f"   Paciente: {nome_paciente}\n"
-                        f"   Data/Hora: {data_agenda} às {hora_agenda}\n"
-                        f"   Profissional: {nome_prof}\n"
-                        f"{'-'*70}"
-                    )
                     
                     try:
                         # Extrai dados com fallbacks para diferentes nomes de campos
@@ -382,14 +446,22 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                         # Formata data para formato brasileiro (DD/MM/YYYY)
                         data_formatada = formatar_data_brasileira(data_agenda)
                         
-                        # Monta mensagem usando template
+                        # Monta mensagem usando template (confirmação ou reagendamento)
                         try:
-                            texto = CONFIRMACAO.substitute(
-                                primeiro_nome=primeiro_nome or "Sou o Assistente da WeClinic",
-                                data_agenda=data_formatada,
-                                hora_agenda=hora_agenda,
-                                procedimentos=procedimentos_texto
-                            )
+                            if eh_reagendamento:
+                                texto = REAGENDAMENTO.substitute(
+                                    primeiro_nome=primeiro_nome or "Sou o Assistente da WeClinic",
+                                    data_agenda=data_formatada,
+                                    hora_agenda=hora_agenda,
+                                    procedimentos=procedimentos_texto
+                                )
+                            else:
+                                texto = CONFIRMACAO.substitute(
+                                    primeiro_nome=primeiro_nome or "Sou o Assistente da WeClinic",
+                                    data_agenda=data_formatada,
+                                    hora_agenda=hora_agenda,
+                                    procedimentos=procedimentos_texto
+                                )
                         except KeyError as e:
                             logger.error(
                                 f"{ciclo_prefix}❌ ERRO: Falha ao processar template da mensagem\n"
@@ -400,21 +472,26 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             continue
                         
                         # Log detalhes do agendamento antes de enviar
+                        tipo_msg = "reagendamento" if eh_reagendamento else "confirmação"
                         logger.info(
                             f"   📱 Telefone: {numero}\n"
                             f"   📋 Procedimentos: {procedimentos_texto}\n"
                             f"   📅 Data: {data_formatada} às {hora_agenda}\n"
                             f"{'-'*70}\n"
-                            f"{ciclo_prefix}📤 Enviando mensagem de confirmação...\n"
+                            f"{ciclo_prefix}📤 Enviando mensagem de {tipo_msg}...\n"
                             f"{'-'*70}"
                         )
 
                         # TESTE: Verifica se é o número permitido para testes (só antes de enviar)
-                        if numero != NUMERO_TESTE:
+                        numero_normalizado = normalizar_numero_para_comparacao(numero)
+                        numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
+                        
+                        if numero_normalizado != numero_teste_normalizado:
                             logger.info(
                                 f"{ciclo_prefix}🧪 TESTE: Confirmação não enviada (número {numero} não é o número de teste)\n"
                                 f"   ID: {ag_id}\n"
-                                f"   Número permitido apenas: {NUMERO_TESTE}\n"
+                                f"   Número recebido (normalizado): {numero_normalizado}\n"
+                                f"   Número de teste (normalizado): {numero_teste_normalizado}\n"
                                 f"   Mensagem montada mas não enviada\n"
                                 f"{'='*70}\n"
                             )
@@ -424,12 +501,18 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                         ok = enviar_mensagem(numero, texto)
                         
                         if ok:
-                            mark_processed(ag_id)
+                            # Salva data/hora ao marcar como processado
+                            tipo_processamento = 'agendamento'  # Sempre usa 'agendamento' para permitir detectar reagendamentos futuros
+                            mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda)
                             total_processados += 1
+                            if eh_reagendamento:
+                                total_reagendamentos_enviados += 1
+                            tipo_msg = "reagendamento" if eh_reagendamento else "confirmação"
                             logger.info(
-                                f"{ciclo_prefix}✅ SUCESSO: Mensagem enviada com sucesso!\n"
+                                f"{ciclo_prefix}✅ SUCESSO: Mensagem de {tipo_msg} enviada com sucesso!\n"
                                 f"   📱 Destinatário: {numero}\n"
                                 f"   ✅ Agendamento marcado como processado\n"
+                                f"   📅 Data/Hora salva: {data_agenda} às {hora_agenda}\n"
                                 f"{'='*70}\n"
                             )
                         else:
@@ -482,9 +565,11 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
     logger.info(f"{ciclo_prefix}📊 RESUMO DO PROCESSAMENTO")
     logger.info("=" * 70)
     logger.info(f"{ciclo_prefix}📋 Novos agendamentos encontrados: {total_novos_encontrados}")
+    logger.info(f"{ciclo_prefix}🔄 Reagendamentos detectados: {total_reagendamentos_detectados}")
     logger.info(f"{ciclo_prefix}⏭️  Agendamentos já processados: {total_ja_processados}")
-    logger.info(f"{ciclo_prefix}✅ Confirmações enviadas com sucesso: {total_processados}")
-    logger.info(f"{ciclo_prefix}❌ Falhas no envio (confirmações): {max(total_novos_encontrados - total_processados, 0)}")
+    logger.info(f"{ciclo_prefix}✅ Confirmações/Reagendamentos enviados com sucesso: {total_processados}")
+    logger.info(f"{ciclo_prefix}   └─ Reagendamentos enviados: {total_reagendamentos_enviados}")
+    logger.info(f"{ciclo_prefix}❌ Falhas no envio (confirmações): {max(total_novos_encontrados + total_reagendamentos_detectados - total_processados, 0)}")
     logger.info("-" * 70)
     logger.info(f"{ciclo_prefix}🛑 Cancelamentos identificados: {total_cancelamentos_encontrados}")
     logger.info(f"{ciclo_prefix}⏭️  Cancelamentos já notificados: {total_cancelamentos_ja_processados}")

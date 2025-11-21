@@ -77,15 +77,19 @@ def inicializar_banco(data_inicial=None, data_final=None):
                     if ag_id is None:
                         continue
                     
+                    # Extrai data e hora do agendamento para armazenar
+                    data_agenda = ag.get("data") or ag.get("dataAgenda")
+                    hora_agenda = ag.get("horaInicio") or ag.get("hora") or ag.get("hora_inicio")
+                    
                     # Verifica se já foi processado
                     if is_processed(ag_id):
                         total_ja_existentes += 1
                         logger.debug(f"ID {ag_id} já estava marcado como processado")
                     else:
-                        # Marca como processado SEM enviar mensagem
-                        mark_processed(ag_id, tipo='inicializacao')
+                        # Marca como processado SEM enviar mensagem, mas salvando data/hora
+                        mark_processed(ag_id, tipo='agendamento', data_agenda=data_agenda, hora_agenda=hora_agenda)
                         total_marcados += 1
-                        logger.debug(f"ID {ag_id} marcado como processado (inicialização)")
+                        logger.debug(f"ID {ag_id} marcado como processado (inicialização, data: {data_agenda}, hora: {hora_agenda})")
             
             # Determina se deve continuar paginando
             first = lista_paginas[0] if lista_paginas else {}

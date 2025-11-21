@@ -54,8 +54,24 @@ def _montar_payload_evolution(numero, texto):
     """
     Monta payload para Evolution API.
     Evolution API espera 'text' diretamente no nível raiz, não aninhado.
+    
+    Formato esperado:
+    {
+        "number": "5511999999999",
+        "text": "mensagem"
+    }
     """
     numero_formatado = _formatar_numero_evolution(numero)
+    
+    # Validação do número formatado
+    if not numero_formatado or len(numero_formatado) < 10:
+        logger.warning(f"Número formatado inválido para Evolution API: {numero_formatado} (original: {numero})")
+    
+    # Validação do texto
+    if not texto or not texto.strip():
+        logger.warning(f"Texto vazio ou inválido para Evolution API")
+        texto = ""
+    
     return {
         "number": numero_formatado,
         "text": texto
@@ -206,6 +222,29 @@ def enviar_mensagem(numero, texto):
                         f"status {resp.status_code}, resposta: {resp.text[:200]}"
                     )
                     return False
+            elif resp.status_code == 400:
+                # Bad Request - log detalhado para debug
+                import json
+                try:
+                    resposta_json = resp.json()
+                except:
+                    resposta_json = resp.text
+                
+                logger.error(
+                    f"❌ ERRO 400 (Bad Request) ao enviar mensagem para {numero}:\n"
+                    f"   URL: {SENDER_API_URL}\n"
+                    f"   Provider: {SENDER_PROVIDER}\n"
+                    f"   Payload enviado: {json.dumps(payload, indent=2, ensure_ascii=False)}\n"
+                    f"   Headers enviados: {json.dumps(headers, indent=2)}\n"
+                    f"   Resposta da API: {json.dumps(resposta_json, indent=2, ensure_ascii=False) if isinstance(resposta_json, dict) else resposta_json}\n"
+                    f"   ⚠️  Verifique:\n"
+                    f"      - Formato do payload está correto?\n"
+                    f"      - Número está formatado corretamente? ({payload.get('number', 'N/A')})\n"
+                    f"      - Instância está conectada no Evolution API?\n"
+                    f"      - URL está correta? (deve incluir nome da instância)\n"
+                    f"      - Autenticação está válida?"
+                )
+                return False
             else:
                 # Erro permanente (4xx, outros 5xx)
                 logger.error(

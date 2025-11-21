@@ -56,8 +56,26 @@ def init_db():
                     CREATE TABLE IF NOT EXISTS processed (
                         id BIGINT NOT NULL,
                         tipo VARCHAR(50) DEFAULT 'agendamento',
+                        data_agenda DATE,
+                        hora_agenda TIME,
                         criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
+                """)
+                conn.commit()
+
+                # Adiciona colunas de data/hora se não existirem (migração)
+                cur.execute("""
+                    DO $$ 
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                      WHERE table_name='processed' AND column_name='data_agenda') THEN
+                            ALTER TABLE processed ADD COLUMN data_agenda DATE;
+                        END IF;
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                      WHERE table_name='processed' AND column_name='hora_agenda') THEN
+                            ALTER TABLE processed ADD COLUMN hora_agenda TIME;
+                        END IF;
+                    END $$;
                 """)
                 conn.commit()
 
@@ -114,13 +132,15 @@ def is_processed(item_id, tipo=None):
         return False
 
 
-def mark_processed(item_id, tipo='agendamento'):
+def mark_processed(item_id, tipo='agendamento', data_agenda=None, hora_agenda=None):
     """
     Marca um ID como processado.
     
     Args:
         item_id: ID do agendamento
         tipo: Tipo do registro (padrão: 'agendamento')
+        data_agenda: Data do agendamento (DATE ou string YYYY-MM-DD) - opcional
+        hora_agenda: Hora do agendamento (TIME ou string HH:MM:SS) - opcional
     """
     if not DATABASE_URL:
         raise ValueError("DATABASE_URL não configurada")
@@ -130,11 +150,15 @@ def mark_processed(item_id, tipo='agendamento'):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO processed (id, tipo) VALUES (%s, %s) ON CONFLICT (id, tipo) DO NOTHING",
-                    (item_id, tipo)
+                    """INSERT INTO processed (id, tipo, data_agenda, hora_agenda) 
+                       VALUES (%s, %s, %s, %s) 
+                       ON CONFLICT (id, tipo) 
+                       DO UPDATE SET data_agenda = EXCLUDED.data_agenda, 
+                                     hora_agenda = EXCLUDED.hora_agenda""",
+                    (item_id, tipo, data_agenda, hora_agenda)
                 )
                 conn.commit()
-                logger.debug(f"ID {item_id} marcado como processado (tipo: {tipo})")
+                logger.debug(f"ID {item_id} marcado como processado (tipo: {tipo}, data: {data_agenda}, hora: {hora_agenda})")
         finally:
             return_connection(conn)
     except psycopg2.IntegrityError:
@@ -143,4 +167,38 @@ def mark_processed(item_id, tipo='agendamento'):
     except Exception as e:
         logger.error(f"Erro ao marcar ID {item_id} como processado: {e}")
         raise
+
+
+def get_processed_data(item_id, tipo='agendamento'):
+    """
+    Obtém os dados armazenados de um agendamento processado.
+    
+    Args:
+        item_id: ID do agendamento
+        tipo: Tipo do registro (padrão: 'agendamento')
+        
+    Returns:
+        Tupla (data_agenda, hora_agenda) ou (None, None) se não encontrado
+    """
+    if not DATABASE_URL:
+        logger.error("DATABASE_URL não configurada")
+        return (None, None)
+    
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT data_agenda, hora_agenda FROM processed WHERE id = %s AND tipo = %s",
+                    (item_id, tipo)
+                )
+                result = cur.fetchone()
+                if result:
+                    return (result[0], result[1])
+                return (None, None)
+        finally:
+            return_connection(conn)
+    except Exception as e:
+        logger.error(f"Erro ao buscar dados do ID {item_id}: {e}")
+        return (None, None)
 
