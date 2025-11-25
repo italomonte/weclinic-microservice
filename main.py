@@ -3,7 +3,7 @@ import logging
 import os
 from dotenv import load_dotenv
 from api_client import fetch_agendamentos
-from storage import init_db, is_processed, mark_processed, get_processed_data
+from storage import init_db, is_processed, mark_processed, get_processed_data, clear_processed
 from sender import enviar_mensagem
 from templates import CONFIRMACAO, CANCELAMENTO, REAGENDAMENTO
 
@@ -466,13 +466,16 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                         )
                         continue
 
-                    # Inicializa variável de reagendamento
+                    # Inicializa variáveis de estado
                     eh_reagendamento = False
                     data_anterior = None
                     hora_anterior = None
+                    cancelamento_previo = is_processed(ag_id, tipo='cancelamento')
+                    ja_processado_agendamento = is_processed(ag_id, tipo='agendamento')
+                    reativar_pos_cancelamento = False
                     
                     # Verifica se já foi processado e se houve reagendamento
-                    if is_processed(ag_id):
+                    if ja_processado_agendamento:
                         # Busca a data/hora armazenada anteriormente
                         data_anterior, hora_anterior = get_processed_data(ag_id, tipo='agendamento')
                         
@@ -490,19 +493,31 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                                 eh_reagendamento = True
                         
                         if not eh_reagendamento:
-                            # Agendamento já processado sem mudanças
-                            total_ja_processados += 1
-                            logger.info(
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"{ciclo_prefix}⏭️  AGENDAMENTO JÁ PROCESSADO\n"
-                                f"   ID: {ag_id}\n"
-                                f"   Paciente: {nome_paciente}\n"
-                                f"   Data/Hora: {data_agenda} às {hora_agenda}\n"
-                                f"   Status: {status_texto or 'N/A'}\n"
-                                f"   Profissional: {nome_prof}\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                            )
-                            continue
+                            if cancelamento_previo:
+                                reativar_pos_cancelamento = True
+                                logger.info(
+                                    f"\n{'='*70}\n"
+                                    f"{ciclo_prefix}🔁 CONFIRMAÇÃO APÓS CANCELAMENTO\n"
+                                    f"{'='*70}\n"
+                                    f"   ID: {ag_id}\n"
+                                    f"   Paciente: {nome_paciente}\n"
+                                    f"   Situação: Cancelado anteriormente, reenviando confirmação\n"
+                                    f"{'-'*70}"
+                                )
+                            else:
+                                # Agendamento já processado sem mudanças
+                                total_ja_processados += 1
+                                logger.info(
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"{ciclo_prefix}⏭️  AGENDAMENTO JÁ PROCESSADO\n"
+                                    f"   ID: {ag_id}\n"
+                                    f"   Paciente: {nome_paciente}\n"
+                                    f"   Data/Hora: {data_agenda} às {hora_agenda}\n"
+                                    f"   Status: {status_texto or 'N/A'}\n"
+                                    f"   Profissional: {nome_prof}\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                                )
+                                continue
                         else:
                             # Detectou reagendamento - log e continua processamento
                             total_reagendamentos_detectados += 1
@@ -518,18 +533,30 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             )
                     
                     if not eh_reagendamento:
-                        total_novos_encontrados += 1
-                        # Log do agendamento NOVO encontrado
-                        logger.info(
-                            f"\n{'='*70}\n"
-                            f"{ciclo_prefix}📋 NOVO AGENDAMENTO ENCONTRADO\n"
-                            f"{'='*70}\n"
-                            f"   ID: {ag_id}\n"
-                            f"   Paciente: {nome_paciente}\n"
-                            f"   Data/Hora: {data_agenda} às {hora_agenda}\n"
-                            f"   Profissional: {nome_prof}\n"
-                            f"{'-'*70}"
-                        )
+                        if reativar_pos_cancelamento:
+                            logger.info(
+                                f"\n{'='*70}\n"
+                                f"{ciclo_prefix}📣 REATIVAÇÃO APÓS CANCELAMENTO\n"
+                                f"{'='*70}\n"
+                                f"   ID: {ag_id}\n"
+                                f"   Paciente: {nome_paciente}\n"
+                                f"   Data/Hora: {data_agenda} às {hora_agenda}\n"
+                                f"   Ação: Enviando confirmação novamente para registro reconfirmado\n"
+                                f"{'-'*70}"
+                            )
+                        else:
+                            total_novos_encontrados += 1
+                            # Log do agendamento NOVO encontrado
+                            logger.info(
+                                f"\n{'='*70}\n"
+                                f"{ciclo_prefix}📋 NOVO AGENDAMENTO ENCONTRADO\n"
+                                f"{'='*70}\n"
+                                f"   ID: {ag_id}\n"
+                                f"   Paciente: {nome_paciente}\n"
+                                f"   Data/Hora: {data_agenda} às {hora_agenda}\n"
+                                f"   Profissional: {nome_prof}\n"
+                                f"{'-'*70}"
+                            )
                     
                     try:
                         # Extrai dados com fallbacks para diferentes nomes de campos
@@ -641,6 +668,14 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             # Salva data/hora ao marcar como processado
                             tipo_processamento = 'agendamento'  # Sempre usa 'agendamento' para permitir detectar reagendamentos futuros
                             mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda)
+                            if cancelamento_previo:
+                                removidos = clear_processed(ag_id, tipo='cancelamento')
+                                if removidos:
+                                    logger.info(
+                                        f"{ciclo_prefix}♻️  Registro de cancelamento removido para permitir novas notificações futuras\n"
+                                        f"   ID: {ag_id}\n"
+                                        f"{'='*70}\n"
+                                    )
                             total_processados += 1
                             if eh_reagendamento:
                                 total_reagendamentos_enviados += 1

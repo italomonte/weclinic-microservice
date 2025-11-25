@@ -169,6 +169,41 @@ def mark_processed(item_id, tipo='agendamento', data_agenda=None, hora_agenda=No
         raise
 
 
+def clear_processed(item_id, tipo=None):
+    """
+    Remove marcações de processamento para um ID.
+    
+    Args:
+        item_id: ID do agendamento
+        tipo: Tipo específico a ser removido. Se None, remove todos os tipos.
+        
+    Returns:
+        Número de registros removidos.
+    """
+    if not DATABASE_URL:
+        logger.error("DATABASE_URL não configurada")
+        return 0
+    
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                if tipo:
+                    cur.execute("DELETE FROM processed WHERE id = %s AND tipo = %s", (item_id, tipo))
+                else:
+                    cur.execute("DELETE FROM processed WHERE id = %s", (item_id,))
+                removidos = cur.rowcount
+                conn.commit()
+                if removidos:
+                    logger.debug(f"ID {item_id} removido da tabela processed (tipo: {tipo or 'todos'})")
+                return removidos
+        finally:
+            return_connection(conn)
+    except Exception as e:
+        logger.error(f"Erro ao remover processamento do ID {item_id}: {e}")
+        return 0
+
+
 def get_processed_data(item_id, tipo='agendamento'):
     """
     Obtém os dados armazenados de um agendamento processado.
