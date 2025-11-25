@@ -2,12 +2,14 @@
 Script de inicialização do banco de dados.
 
 Este script busca TODOS os agendamentos existentes na API e marca como processados
-SEM enviar mensagens. Use quando iniciar o sistema pela primeira vez ou quiser
+SEM enviar mensagens. Marca agendamentos, cancelamentos e reagendamentos de acordo
+com o status atual. Use quando iniciar o sistema pela primeira vez ou quiser
 resetar apenas os agendamentos que já existiam.
 
 Útil quando:
 - Sistema já existia e quer evitar enviar mensagens para agendamentos antigos
 - Resetar o banco mantendo apenas os novos agendamentos
+- Desenvolvimento: marcar tudo que aconteceu enquanto estava desenvolvendo
 """
 
 import datetime
@@ -25,10 +27,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Palavras-chave para detecção de status (mesmas do main.py)
+CANCELAMENTO_KEYWORD = "CANCELADO"
+CONFIRMADO_KEYWORD = "CONFIRMADO"
+
+
+def obter_status_agendamento(agendamento):
+    """Extrai o status do agendamento usando apenas o campo 'status'."""
+    status = agendamento.get("status")
+    if status:
+        return str(status).strip()
+    return ""
+
 
 def inicializar_banco(data_inicial=None, data_final=None):
     """
     Busca todos os agendamentos no intervalo e marca como processados SEM enviar mensagem.
+    Marca agendamentos confirmados e cancelamentos de acordo com o status atual.
     
     Args:
         data_inicial: Data inicial (YYYY-MM-DD). Se None, usa 60 dias atrás
@@ -36,7 +51,7 @@ def inicializar_banco(data_inicial=None, data_final=None):
     """
     init_db()
     
-    # Define intervalo padrão: 60 dias atrás até hoje (ou use DAYS_AHEAD se configurado)
+    # Define intervalo padrão: 60 dias atrás até hoje
     if data_inicial is None:
         data_inicial = (datetime.date.today() - datetime.timedelta(days=60)).isoformat()
     if data_final is None:
@@ -44,9 +59,11 @@ def inicializar_banco(data_inicial=None, data_final=None):
     
     logger.info(f"Inicializando banco: marcando agendamentos de {data_inicial} a {data_final} como processados")
     logger.info("ATENÇÃO: Nenhuma mensagem será enviada. Apenas marcando IDs como processados.")
+    logger.info("Marcará agendamentos confirmados e cancelamentos de acordo com o status atual.")
     
     pagina = 0  # API começa a paginação em 0, não em 1
-    total_marcados = 0
+    total_marcados_agendamentos = 0
+    total_marcados_cancelamentos = 0
     total_ja_existentes = 0
     
     while True:
@@ -77,19 +94,38 @@ def inicializar_banco(data_inicial=None, data_final=None):
                     if ag_id is None:
                         continue
                     
+                    # Extrai status e dados do agendamento
+                    status_texto = obter_status_agendamento(ag)
+                    status_upper = status_texto.upper() if status_texto else ""
+                    cancelamento_detectado = CANCELAMENTO_KEYWORD in status_upper
+                    confirmado_detectado = CONFIRMADO_KEYWORD in status_upper
+                    
                     # Extrai data e hora do agendamento para armazenar
                     data_agenda = ag.get("data") or ag.get("dataAgenda")
                     hora_agenda = ag.get("horaInicio") or ag.get("hora") or ag.get("hora_inicio")
                     
-                    # Verifica se já foi processado
-                    if is_processed(ag_id):
+                    # Determina o tipo baseado no status
+                    tipo_processamento = None
+                    if cancelamento_detectado:
+                        tipo_processamento = 'cancelamento'
+                    elif confirmado_detectado:
+                        tipo_processamento = 'agendamento'
+                    else:
+                        # Se não é cancelado nem confirmado, marca como agendamento por padrão
+                        tipo_processamento = 'agendamento'
+                    
+                    # Verifica se já foi processado para este tipo
+                    if is_processed(ag_id, tipo=tipo_processamento):
                         total_ja_existentes += 1
-                        logger.debug(f"ID {ag_id} já estava marcado como processado")
+                        logger.debug(f"ID {ag_id} (tipo: {tipo_processamento}) já estava marcado como processado")
                     else:
                         # Marca como processado SEM enviar mensagem, mas salvando data/hora
-                        mark_processed(ag_id, tipo='agendamento', data_agenda=data_agenda, hora_agenda=hora_agenda)
-                        total_marcados += 1
-                        logger.debug(f"ID {ag_id} marcado como processado (inicialização, data: {data_agenda}, hora: {hora_agenda})")
+                        mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda)
+                        if tipo_processamento == 'cancelamento':
+                            total_marcados_cancelamentos += 1
+                        else:
+                            total_marcados_agendamentos += 1
+                        logger.debug(f"ID {ag_id} marcado como {tipo_processamento} (status: {status_texto}, data: {data_agenda}, hora: {hora_agenda})")
             
             # Determina se deve continuar paginando
             first = lista_paginas[0] if lista_paginas else {}
@@ -106,7 +142,8 @@ def inicializar_banco(data_inicial=None, data_final=None):
             
             # Log de progresso a cada 10 páginas
             if pagina % 10 == 0:
-                logger.info(f"Progresso: página {pagina}, {total_marcados} novos marcados, {total_ja_existentes} já existentes")
+                total_novos = total_marcados_agendamentos + total_marcados_cancelamentos
+                logger.info(f"Progresso: página {pagina}, {total_novos} novos marcados ({total_marcados_agendamentos} agendamentos, {total_marcados_cancelamentos} cancelamentos), {total_ja_existentes} já existentes")
         
         except Exception as e:
             logger.error(f"Erro ao processar página {pagina}: {e}", exc_info=True)
@@ -115,13 +152,16 @@ def inicializar_banco(data_inicial=None, data_final=None):
                 logger.error("Limite de páginas excedido, abortando")
                 break
     
+    total_novos = total_marcados_agendamentos + total_marcados_cancelamentos
     logger.info("=" * 60)
     logger.info(f"Inicialização concluída!")
-    logger.info(f"  - Novos IDs marcados: {total_marcados}")
+    logger.info(f"  - Agendamentos marcados: {total_marcados_agendamentos}")
+    logger.info(f"  - Cancelamentos marcados: {total_marcados_cancelamentos}")
+    logger.info(f"  - Total novos marcados: {total_novos}")
     logger.info(f"  - IDs já existentes: {total_ja_existentes}")
-    logger.info(f"  - Total processado: {total_marcados + total_ja_existentes}")
+    logger.info(f"  - Total processado: {total_novos + total_ja_existentes}")
     logger.info("=" * 60)
-    logger.info("Agora o sistema só enviará mensagens para agendamentos NOVOS criados após esta inicialização.")
+    logger.info("Agora o sistema só enviará mensagens para agendamentos, cancelamentos e reagendamentos NOVOS criados após esta inicialização.")
 
 
 if __name__ == "__main__":

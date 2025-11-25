@@ -1,9 +1,13 @@
 import datetime
 import logging
+import os
+from dotenv import load_dotenv
 from api_client import fetch_agendamentos
 from storage import init_db, is_processed, mark_processed, get_processed_data
 from sender import enviar_mensagem
 from templates import CONFIRMACAO, CANCELAMENTO, REAGENDAMENTO
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +22,12 @@ CONFIRMADO_KEYWORD = "CONFIRMADO"
 # TESTE: Número permitido para envio de mensagens (apenas para testes)
 # Pode estar com ou sem o prefixo 55 - será normalizado na comparação
 NUMERO_TESTE = "92984532273"  # Remove ou comente esta linha para permitir todos os números
+
+# Template names para Aspa API
+ASPA_TEMPLATE_CONFIRMACAO = os.getenv("AGENDAMENTO_MODEL_NAME")
+ASPA_TEMPLATE_REAGENDAMENTO = os.getenv("REAGENDAMENTO_MODEL_NAME")
+ASPA_TEMPLATE_CANCELAMENTO = os.getenv("CANCELAMENTO_MODEL_NAME")
+ASPA_CHANNEL_ID = os.getenv("ASPA_CHANNEL")
 
 
 def normalizar_numero_para_comparacao(numero):
@@ -127,6 +137,120 @@ def obter_numero_paciente(agendamento):
         ""
     )
     return "".join([c for c in str(numero) if c.isdigit()])
+
+
+def montar_contact_object(primeiro_nome, numero):
+    """
+    Monta objeto contact para Aspa API.
+    
+    Args:
+        primeiro_nome: Primeiro nome do paciente (não usado, alias sempre será "Italo")
+        numero: Número de telefone (será formatado pela função _formatar_numero_aspa)
+    
+    Returns:
+        Objeto contact com alias, phone, update
+    """
+    return {
+        "alias": "Italo",
+        "phone": numero,
+        "update": True
+    }
+
+
+def montar_params_aspa_confirmacao(data_formatada, hora_agenda, procedimentos_texto, endereco):
+    """
+    Monta params para template de confirmação (AGENDAMENTO_MODEL_NAME).
+    
+    Template espera:
+    - {{1}} = data (DD/MM/YYYY)
+    - {{2}} = hora (HH:MM)
+    - {{3}} = procedimentos
+    - {{4}} = endereço
+    
+    Args:
+        data_formatada: Data no formato DD/MM/YYYY
+        hora_agenda: Hora no formato HH:MM ou HH:MM:SS
+        procedimentos_texto: Texto dos procedimentos
+        endereco: Endereço da clínica
+    
+    Returns:
+        Dicionário com estrutura params para Aspa API (apenas content)
+    """
+    # Remove segundos da hora se houver
+    hora_formatada = hora_agenda[:5] if len(hora_agenda) >= 5 else hora_agenda
+    
+    return {
+        "content": {
+            "1": data_formatada,
+            "2": hora_formatada,
+            "3": procedimentos_texto,
+            "4": endereco or "—"
+        }
+    }
+
+
+def montar_params_aspa_cancelamento(procedimentos_texto, data_formatada, hora_agenda):
+    """
+    Monta params para template de cancelamento (CANCELAMENTO_MODEL_NAME).
+    
+    Template espera:
+    - {{1}} = tipo de atendimento (procedimentos)
+    - {{2}} = data (DD/MM/YYYY)
+    - {{3}} = hora (HH:MM)
+    
+    Args:
+        procedimentos_texto: Texto dos procedimentos (tipo de atendimento)
+        data_formatada: Data no formato DD/MM/YYYY
+        hora_agenda: Hora no formato HH:MM ou HH:MM:SS
+    
+    Returns:
+        Dicionário com estrutura params para Aspa API (apenas content)
+    """
+    # Remove segundos da hora se houver
+    hora_formatada = hora_agenda[:5] if len(hora_agenda) >= 5 else hora_agenda
+    
+    return {
+        "content": {
+            "1": procedimentos_texto,
+            "2": data_formatada,
+            "3": hora_formatada
+        }
+    }
+
+
+def montar_params_aspa_reagendamento(procedimentos_texto, data_formatada, hora_agenda, status, numero):
+    """
+    Monta params para template de reagendamento (REAGENDAMENTO_MODEL_NAME).
+    
+    Template espera:
+    - {{1}} = tipo de atendimento (procedimentos)
+    - {{2}} = data (DD/MM/YYYY)
+    - {{3}} = hora (HH:MM)
+    - {{4}} = status
+    - {{5}} = telefone
+    
+    Args:
+        procedimentos_texto: Texto dos procedimentos (tipo de atendimento)
+        data_formatada: Data no formato DD/MM/YYYY
+        hora_agenda: Hora no formato HH:MM ou HH:MM:SS
+        status: Status do agendamento (ex: "REAGENDADO")
+        numero: Número de telefone formatado
+    
+    Returns:
+        Dicionário com estrutura params para Aspa API (apenas content)
+    """
+    # Remove segundos da hora se houver
+    hora_formatada = hora_agenda[:5] if len(hora_agenda) >= 5 else hora_agenda
+    
+    return {
+        "content": {
+            "1": procedimentos_texto,
+            "2": data_formatada,
+            "3": hora_formatada,
+            "4": status or "REAGENDADO",
+            "5": numero
+        }
+    }
 
 
 def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
@@ -272,13 +396,6 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             )
                             continue
 
-                        texto_cancelamento = CANCELAMENTO.substitute(
-                            primeiro_nome=primeiro_nome,
-                            tipo_consulta=tipo_consulta,
-                            data_agenda=data_formatada or data_agenda,
-                            hora_agenda=hora_agenda
-                        )
-
                         logger.info(
                             f"   📱 Telefone: {numero}\n"
                             f"   📋 Procedimentos: {procedimentos_texto}\n"
@@ -303,7 +420,22 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             )
                             continue
 
-                        ok_cancel = enviar_mensagem(numero, texto_cancelamento)
+                        # Monta dados para Aspa API
+                        contact = montar_contact_object(primeiro_nome, numero)
+                        params = montar_params_aspa_cancelamento(
+                            procedimentos_texto,
+                            data_formatada or data_agenda,
+                            hora_agenda
+                        )
+                        
+                        ok_cancel = enviar_mensagem(
+                            numero=numero,
+                            texto="",  # Não usado para Aspa
+                            template_key=ASPA_TEMPLATE_CANCELAMENTO,
+                            params=params,
+                            contact=contact,
+                            channel_id=ASPA_CHANNEL_ID
+                        )
 
                         if ok_cancel:
                             mark_processed(ag_id, tipo='cancelamento')
@@ -446,31 +578,6 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                         # Formata data para formato brasileiro (DD/MM/YYYY)
                         data_formatada = formatar_data_brasileira(data_agenda)
                         
-                        # Monta mensagem usando template (confirmação ou reagendamento)
-                        try:
-                            if eh_reagendamento:
-                                texto = REAGENDAMENTO.substitute(
-                                    primeiro_nome=primeiro_nome or "Sou o Assistente da WeClinic",
-                                    data_agenda=data_formatada,
-                                    hora_agenda=hora_agenda,
-                                    procedimentos=procedimentos_texto
-                                )
-                            else:
-                                texto = CONFIRMACAO.substitute(
-                                    primeiro_nome=primeiro_nome or "Sou o Assistente da WeClinic",
-                                    data_agenda=data_formatada,
-                                    hora_agenda=hora_agenda,
-                                    procedimentos=procedimentos_texto
-                                )
-                        except KeyError as e:
-                            logger.error(
-                                f"{ciclo_prefix}❌ ERRO: Falha ao processar template da mensagem\n"
-                                f"   🔍 Variável faltando: {e}\n"
-                                f"   ⏭️  Agendamento ignorado\n"
-                                f"{'='*70}\n"
-                            )
-                            continue
-                        
                         # Log detalhes do agendamento antes de enviar
                         tipo_msg = "reagendamento" if eh_reagendamento else "confirmação"
                         logger.info(
@@ -497,8 +604,38 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             )
                             continue
                         
-                        # Envia mensagem
-                        ok = enviar_mensagem(numero, texto)
+                        # Monta dados para Aspa API
+                        contact = montar_contact_object(primeiro_nome, numero)
+                        
+                        if eh_reagendamento:
+                            # Reagendamento: procedimentos, data, hora, status, telefone
+                            params = montar_params_aspa_reagendamento(
+                                procedimentos_texto,
+                                data_formatada,
+                                hora_agenda,
+                                status_texto or "REAGENDADO",
+                                numero
+                            )
+                            template_key = ASPA_TEMPLATE_REAGENDAMENTO
+                        else:
+                            # Confirmação: data, hora, procedimentos, endereco
+                            params = montar_params_aspa_confirmacao(
+                                data_formatada,
+                                hora_agenda,
+                                procedimentos_texto,
+                                endereco
+                            )
+                            template_key = ASPA_TEMPLATE_CONFIRMACAO
+                        
+                        # Envia mensagem via Aspa API
+                        ok = enviar_mensagem(
+                            numero=numero,
+                            texto="",  # Não usado para Aspa
+                            template_key=template_key,
+                            params=params,
+                            contact=contact,
+                            channel_id=ASPA_CHANNEL_ID
+                        )
                         
                         if ok:
                             # Salva data/hora ao marcar como processado
