@@ -58,6 +58,19 @@ if sender_provider == "aspa":
     else:
         exc_cons_key = os.getenv("AGENDAMENTO_EXC_CONS_MODEL_NAME")
         print(f"✅ AGENDAMENTO_EXC_CONS_MODEL_NAME: {exc_cons_key[:20]}...")
+
+    # Modelos de lembrete (24h antes)
+    if not os.getenv("LEMBRETE_PADRAO_MODEL_NAME"):
+        avisos.append("⚠️  LEMBRETE_PADRAO_MODEL_NAME não configurado (lembrete simples 24h antes)")
+    else:
+        lembrete_padrao_key = os.getenv("LEMBRETE_PADRAO_MODEL_NAME")
+        print(f"✅ LEMBRETE_PADRAO_MODEL_NAME: {lembrete_padrao_key[:20]}...")
+
+    if not os.getenv("LEMBRETE_DEPILACAO_MODEL_NAME"):
+        avisos.append("⚠️  LEMBRETE_DEPILACAO_MODEL_NAME não configurado (lembrete específico de Depilação a Laser)")
+    else:
+        lembrete_dep_key = os.getenv("LEMBRETE_DEPILACAO_MODEL_NAME")
+        print(f"✅ LEMBRETE_DEPILACAO_MODEL_NAME: {lembrete_dep_key[:20]}...")
     
     if not os.getenv("REAGENDAMENTO_MODEL_NAME"):
         avisos.append("⚠️  REAGENDAMENTO_MODEL_NAME não configurado")

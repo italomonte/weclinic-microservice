@@ -1,0 +1,12 @@
+agora quero fazer mais algumas funcinalidades de envio de mensagem
+
+1. Lembrete simples
+nome do modelo no .env: LEMBRETE_PADRAO_MODEL_NAME
+parametros: [procedimento] [data] [hora]
+condição de envio: Enviar 24h antes do atendimento
+
+2. Lembrete Depilação a Lazer
+nome do modelo no .env: LEMBRETE_DEPILACAO_MODEL_NAME
+parametros: n tem parametros
+condição de envio: Enviar 24h antes do atendimento
+

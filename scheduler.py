@@ -5,7 +5,7 @@ from datetime import datetime as dt
 from dotenv import load_dotenv
 import logging
 from storage import init_db
-from main import processar_intervalo
+from main import processar_intervalo, processar_lembretes
 
 load_dotenv()
 
@@ -49,6 +49,8 @@ def run_forever():
             logger.info("🔄" + "=" * 68)
             
             processar_intervalo(data_inicial, data_final, ciclo_numero)
+            # Lembretes 24h antes
+            processar_lembretes(ciclo_numero)
             
             logger.info("")
             logger.info(f"⏳ Próximo ciclo em {INTERVAL_MIN} minutos...")
