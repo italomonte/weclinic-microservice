@@ -53,6 +53,12 @@ if sender_provider == "aspa":
         template_key = os.getenv("AGENDAMENTO_MODEL_NAME")
         print(f"✅ AGENDAMENTO_MODEL_NAME: {template_key[:20]}...")
     
+    if not os.getenv("AGENDAMENTO_EXC_CONS_MODEL_NAME"):
+        avisos.append("⚠️  AGENDAMENTO_EXC_CONS_MODEL_NAME não configurado (usado para agendamentos que não são consulta)")
+    else:
+        exc_cons_key = os.getenv("AGENDAMENTO_EXC_CONS_MODEL_NAME")
+        print(f"✅ AGENDAMENTO_EXC_CONS_MODEL_NAME: {exc_cons_key[:20]}...")
+    
     if not os.getenv("REAGENDAMENTO_MODEL_NAME"):
         avisos.append("⚠️  REAGENDAMENTO_MODEL_NAME não configurado")
     

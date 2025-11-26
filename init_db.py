@@ -119,8 +119,9 @@ def inicializar_banco(data_inicial=None, data_final=None):
                         total_ja_existentes += 1
                         logger.debug(f"ID {ag_id} (tipo: {tipo_processamento}) já estava marcado como processado")
                     else:
-                        # Marca como processado SEM enviar mensagem, mas salvando data/hora
-                        mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda)
+                        # Marca como processado SEM enviar mensagem, mas salvando data/hora e id_tipo_consulta
+                        id_tipo_consulta = ag.get("idTipoConsulta")
+                        mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda, id_tipo_consulta=id_tipo_consulta)
                         if tipo_processamento == 'cancelamento':
                             total_marcados_cancelamentos += 1
                         else:

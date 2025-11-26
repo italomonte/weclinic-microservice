@@ -25,9 +25,13 @@ NUMERO_TESTE = "92984532273"  # Remove ou comente esta linha para permitir todos
 
 # Template names para Aspa API
 ASPA_TEMPLATE_CONFIRMACAO = os.getenv("AGENDAMENTO_MODEL_NAME")
+ASPA_TEMPLATE_EXC_CONS = os.getenv("AGENDAMENTO_EXC_CONS_MODEL_NAME")  # Para agendamentos que não são consulta
 ASPA_TEMPLATE_REAGENDAMENTO = os.getenv("REAGENDAMENTO_MODEL_NAME")
 ASPA_TEMPLATE_CANCELAMENTO = os.getenv("CANCELAMENTO_MODEL_NAME")
 ASPA_CHANNEL_ID = os.getenv("ASPA_CHANNEL")
+
+# ID do tipo consulta (113784) - se idTipoConsulta for diferente, usa AGENDAMENTO_EXC_CONS_MODEL_NAME
+ID_TIPO_CONSULTA = 113784
 
 
 def normalizar_numero_para_comparacao(numero):
@@ -468,16 +472,21 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
 
                     # Inicializa variáveis de estado
                     eh_reagendamento = False
+                    mudou_tipo_consulta = False
                     data_anterior = None
                     hora_anterior = None
+                    id_tipo_consulta_anterior = None
                     cancelamento_previo = is_processed(ag_id, tipo='cancelamento')
                     ja_processado_agendamento = is_processed(ag_id, tipo='agendamento')
                     reativar_pos_cancelamento = False
                     
-                    # Verifica se já foi processado e se houve reagendamento
+                    # Obtém idTipoConsulta atual do agendamento (sempre necessário)
+                    id_tipo_consulta_atual = ag.get("idTipoConsulta")
+                    
+                    # Verifica se já foi processado e se houve reagendamento ou mudança de tipo
                     if ja_processado_agendamento:
-                        # Busca a data/hora armazenada anteriormente
-                        data_anterior, hora_anterior = get_processed_data(ag_id, tipo='agendamento')
+                        # Busca a data/hora e tipo de consulta armazenados anteriormente
+                        data_anterior, hora_anterior, id_tipo_consulta_anterior = get_processed_data(ag_id, tipo='agendamento')
                         
                         # Normaliza data e hora atual para comparação
                         data_atual_str = str(data_agenda).strip() if data_agenda != "N/A" else ""
@@ -492,7 +501,33 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             if data_atual_str != data_anterior_str or hora_atual_comparacao != hora_anterior_str:
                                 eh_reagendamento = True
                         
-                        if not eh_reagendamento:
+                        # Verifica se mudou o tipo de consulta (apenas quando já existia um valor salvo)
+                        # Isso evita tratar registros antigos (sem tipo salvo) como mudanças
+                        tipo_anterior_int = None
+                        tipo_atual_int = None
+                        
+                        if id_tipo_consulta_anterior is not None:
+                            try:
+                                tipo_anterior_int = int(str(id_tipo_consulta_anterior).strip())
+                            except (ValueError, TypeError, AttributeError):
+                                tipo_anterior_int = None
+                        
+                        if id_tipo_consulta_atual is not None:
+                            try:
+                                tipo_atual_int = int(str(id_tipo_consulta_atual).strip())
+                            except (ValueError, TypeError, AttributeError):
+                                tipo_atual_int = None
+                        
+                        if tipo_anterior_int is not None and tipo_atual_int is not None:
+                            if tipo_anterior_int != tipo_atual_int:
+                                mudou_tipo_consulta = True
+                                logger.info(
+                                    f"{ciclo_prefix}🔄 Mudança real de tipo de consulta detectada: "
+                                    f"{tipo_anterior_int} → {tipo_atual_int}"
+                                )
+
+                        
+                        if not eh_reagendamento and not mudou_tipo_consulta:
                             if cancelamento_previo:
                                 reativar_pos_cancelamento = True
                                 logger.info(
@@ -519,18 +554,31 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                                 )
                                 continue
                         else:
-                            # Detectou reagendamento - log e continua processamento
-                            total_reagendamentos_detectados += 1
-                            logger.info(
-                                f"\n{'='*70}\n"
-                                f"{ciclo_prefix}🔄 REAGENDAMENTO DETECTADO\n"
-                                f"{'='*70}\n"
-                                f"   ID: {ag_id}\n"
-                                f"   Paciente: {nome_paciente}\n"
-                                f"   Data/Hora anterior: {data_anterior} às {hora_anterior}\n"
-                                f"   Data/Hora nova: {data_agenda} às {hora_agenda}\n"
-                                f"{'-'*70}"
-                            )
+                            # Detectou reagendamento ou mudança de tipo - log e continua processamento
+                            if eh_reagendamento:
+                                total_reagendamentos_detectados += 1
+                                logger.info(
+                                    f"\n{'='*70}\n"
+                                    f"{ciclo_prefix}🔄 REAGENDAMENTO DETECTADO\n"
+                                    f"{'='*70}\n"
+                                    f"   ID: {ag_id}\n"
+                                    f"   Paciente: {nome_paciente}\n"
+                                    f"   Data/Hora anterior: {data_anterior} às {hora_anterior}\n"
+                                    f"   Data/Hora nova: {data_agenda} às {hora_agenda}\n"
+                                    f"{'-'*70}"
+                                )
+                            if mudou_tipo_consulta:
+                                logger.info(
+                                    f"\n{'='*70}\n"
+                                    f"{ciclo_prefix}🔄 MUDANÇA DE TIPO DE CONSULTA DETECTADA\n"
+                                    f"{'='*70}\n"
+                                    f"   ID: {ag_id}\n"
+                                    f"   Paciente: {nome_paciente}\n"
+                                    f"   Tipo anterior: {id_tipo_consulta_anterior}\n"
+                                    f"   Tipo atual: {id_tipo_consulta_atual}\n"
+                                    f"   Ação: Reenviando confirmação com template apropriado\n"
+                                    f"{'-'*70}"
+                                )
                     
                     if not eh_reagendamento:
                         if reativar_pos_cancelamento:
@@ -652,7 +700,31 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                                 procedimentos_texto,
                                 endereco
                             )
-                            template_key = ASPA_TEMPLATE_CONFIRMACAO
+                            # Verifica se é consulta ou outro tipo de agendamento
+                            id_tipo_consulta = ag.get("idTipoConsulta")
+                            # Se idTipoConsulta for igual a 113784, é consulta - usa template padrão
+                            # Caso contrário (diferente ou None), usa template exclusivo
+                            if id_tipo_consulta is not None and int(id_tipo_consulta) == ID_TIPO_CONSULTA:
+                                # É consulta - usa template padrão
+                                template_key = ASPA_TEMPLATE_CONFIRMACAO
+                            else:
+                                # Não é consulta - usa template exclusivo
+                                template_key = ASPA_TEMPLATE_EXC_CONS
+                                if not template_key:
+                                    logger.warning(
+                                        f"{ciclo_prefix}⚠️  AGENDAMENTO_EXC_CONS_MODEL_NAME não configurado, "
+                                        f"usando AGENDAMENTO_MODEL_NAME como fallback\n"
+                                        f"   ID: {ag_id}\n"
+                                        f"   idTipoConsulta: {id_tipo_consulta}\n"
+                                    )
+                                    template_key = ASPA_TEMPLATE_CONFIRMACAO
+                                else:
+                                    logger.debug(
+                                        f"{ciclo_prefix}📋 Usando template exclusivo (não-consulta) para agendamento\n"
+                                        f"   ID: {ag_id}\n"
+                                        f"   idTipoConsulta: {id_tipo_consulta}\n"
+                                        f"   Template: {template_key}\n"
+                                    )
                         
                         # Envia mensagem via Aspa API
                         ok = enviar_mensagem(
@@ -665,9 +737,10 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                         )
                         
                         if ok:
-                            # Salva data/hora ao marcar como processado
+                            # Salva data/hora e tipo de consulta ao marcar como processado
                             tipo_processamento = 'agendamento'  # Sempre usa 'agendamento' para permitir detectar reagendamentos futuros
-                            mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda)
+                            # id_tipo_consulta_atual já foi obtido anteriormente
+                            mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda, id_tipo_consulta=id_tipo_consulta_atual)
                             if cancelamento_previo:
                                 removidos = clear_processed(ag_id, tipo='cancelamento')
                                 if removidos:

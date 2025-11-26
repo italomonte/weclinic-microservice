@@ -63,7 +63,7 @@ def init_db():
                 """)
                 conn.commit()
 
-                # Adiciona colunas de data/hora se não existirem (migração)
+                # Adiciona colunas de data/hora e id_tipo_consulta se não existirem (migração)
                 cur.execute("""
                     DO $$ 
                     BEGIN
@@ -74,6 +74,10 @@ def init_db():
                         IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                                       WHERE table_name='processed' AND column_name='hora_agenda') THEN
                             ALTER TABLE processed ADD COLUMN hora_agenda TIME;
+                        END IF;
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                      WHERE table_name='processed' AND column_name='id_tipo_consulta') THEN
+                            ALTER TABLE processed ADD COLUMN id_tipo_consulta INTEGER;
                         END IF;
                     END $$;
                 """)
@@ -132,7 +136,7 @@ def is_processed(item_id, tipo=None):
         return False
 
 
-def mark_processed(item_id, tipo='agendamento', data_agenda=None, hora_agenda=None):
+def mark_processed(item_id, tipo='agendamento', data_agenda=None, hora_agenda=None, id_tipo_consulta=None):
     """
     Marca um ID como processado.
     
@@ -141,6 +145,7 @@ def mark_processed(item_id, tipo='agendamento', data_agenda=None, hora_agenda=No
         tipo: Tipo do registro (padrão: 'agendamento')
         data_agenda: Data do agendamento (DATE ou string YYYY-MM-DD) - opcional
         hora_agenda: Hora do agendamento (TIME ou string HH:MM:SS) - opcional
+        id_tipo_consulta: ID do tipo de consulta (INTEGER) - opcional, usado para detectar mudanças
     """
     if not DATABASE_URL:
         raise ValueError("DATABASE_URL não configurada")
@@ -150,15 +155,16 @@ def mark_processed(item_id, tipo='agendamento', data_agenda=None, hora_agenda=No
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """INSERT INTO processed (id, tipo, data_agenda, hora_agenda) 
-                       VALUES (%s, %s, %s, %s) 
+                    """INSERT INTO processed (id, tipo, data_agenda, hora_agenda, id_tipo_consulta) 
+                       VALUES (%s, %s, %s, %s, %s) 
                        ON CONFLICT (id, tipo) 
                        DO UPDATE SET data_agenda = EXCLUDED.data_agenda, 
-                                     hora_agenda = EXCLUDED.hora_agenda""",
-                    (item_id, tipo, data_agenda, hora_agenda)
+                                     hora_agenda = EXCLUDED.hora_agenda,
+                                     id_tipo_consulta = EXCLUDED.id_tipo_consulta""",
+                    (item_id, tipo, data_agenda, hora_agenda, id_tipo_consulta)
                 )
                 conn.commit()
-                logger.debug(f"ID {item_id} marcado como processado (tipo: {tipo}, data: {data_agenda}, hora: {hora_agenda})")
+                logger.debug(f"ID {item_id} marcado como processado (tipo: {tipo}, data: {data_agenda}, hora: {hora_agenda}, id_tipo_consulta: {id_tipo_consulta})")
         finally:
             return_connection(conn)
     except psycopg2.IntegrityError:
@@ -213,27 +219,27 @@ def get_processed_data(item_id, tipo='agendamento'):
         tipo: Tipo do registro (padrão: 'agendamento')
         
     Returns:
-        Tupla (data_agenda, hora_agenda) ou (None, None) se não encontrado
+        Tupla (data_agenda, hora_agenda, id_tipo_consulta) ou (None, None, None) se não encontrado
     """
     if not DATABASE_URL:
         logger.error("DATABASE_URL não configurada")
-        return (None, None)
+        return (None, None, None)
     
     try:
         conn = get_connection()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT data_agenda, hora_agenda FROM processed WHERE id = %s AND tipo = %s",
+                    "SELECT data_agenda, hora_agenda, id_tipo_consulta FROM processed WHERE id = %s AND tipo = %s",
                     (item_id, tipo)
                 )
                 result = cur.fetchone()
                 if result:
-                    return (result[0], result[1])
-                return (None, None)
+                    return (result[0], result[1], result[2])
+                return (None, None, None)
         finally:
             return_connection(conn)
     except Exception as e:
         logger.error(f"Erro ao buscar dados do ID {item_id}: {e}")
-        return (None, None)
+        return (None, None, None)
 
