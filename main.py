@@ -20,8 +20,8 @@ CANCELAMENTO_KEYWORD = "CANCELADO"
 CONFIRMADO_KEYWORD = "CONFIRMADO"
 
 # TESTE: Número permitido para envio de mensagens (apenas para testes)
-# Pode estar com ou sem o prefixo 55 - será normalizado na comparação
-NUMERO_TESTE = "92984532273"  # Remove ou comente esta linha para permitir todos os números
+# Quando None, o envio é liberado para todos os números.
+NUMERO_TESTE = None
 
 # Template names para Aspa API
 ASPA_TEMPLATE_CONFIRMACAO = os.getenv("AGENDAMENTO_MODEL_NAME")
@@ -532,19 +532,20 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                         )
 
                         # TESTE: Verifica se é o número permitido para testes (só antes de enviar)
-                        numero_normalizado = normalizar_numero_para_comparacao(numero)
-                        numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
-                        
-                        if numero_normalizado != numero_teste_normalizado:
-                            logger.info(
-                                f"{ciclo_prefix}🧪 TESTE: Cancelamento não enviado (número {numero} não é o número de teste)\n"
-                                f"   ID: {ag_id}\n"
-                                f"   Número recebido (normalizado): {numero_normalizado}\n"
-                                f"   Número de teste (normalizado): {numero_teste_normalizado}\n"
-                                f"   Mensagem montada mas não enviada\n"
-                                f"{'='*70}\n"
-                            )
-                            continue
+                        if NUMERO_TESTE:
+                            numero_normalizado = normalizar_numero_para_comparacao(numero)
+                            numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
+                            
+                            if numero_normalizado != numero_teste_normalizado:
+                                logger.info(
+                                    f"{ciclo_prefix}🧪 TESTE: Cancelamento não enviado (número {numero} não é o número de teste)\n"
+                                    f"   ID: {ag_id}\n"
+                                    f"   Número recebido (normalizado): {numero_normalizado}\n"
+                                    f"   Número de teste (normalizado): {numero_teste_normalizado}\n"
+                                    f"   Mensagem montada mas não enviada\n"
+                                    f"{'='*70}\n"
+                                )
+                                continue
 
                         # Monta dados para Aspa API
                         contact = montar_contact_object(primeiro_nome, numero)
@@ -787,19 +788,20 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                         )
 
                         # TESTE: Verifica se é o número permitido para testes (só antes de enviar)
-                        numero_normalizado = normalizar_numero_para_comparacao(numero)
-                        numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
-                        
-                        if numero_normalizado != numero_teste_normalizado:
-                            logger.info(
-                                f"{ciclo_prefix}🧪 TESTE: Confirmação não enviada (número {numero} não é o número de teste)\n"
-                                f"   ID: {ag_id}\n"
-                                f"   Número recebido (normalizado): {numero_normalizado}\n"
-                                f"   Número de teste (normalizado): {numero_teste_normalizado}\n"
-                                f"   Mensagem montada mas não enviada\n"
-                                f"{'='*70}\n"
-                            )
-                            continue
+                        if NUMERO_TESTE:
+                            numero_normalizado = normalizar_numero_para_comparacao(numero)
+                            numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
+                            
+                            if numero_normalizado != numero_teste_normalizado:
+                                logger.info(
+                                    f"{ciclo_prefix}🧪 TESTE: Confirmação não enviada (número {numero} não é o número de teste)\n"
+                                    f"   ID: {ag_id}\n"
+                                    f"   Número recebido (normalizado): {numero_normalizado}\n"
+                                    f"   Número de teste (normalizado): {numero_teste_normalizado}\n"
+                                    f"   Mensagem montada mas não enviada\n"
+                                    f"{'='*70}\n"
+                                )
+                                continue
                         
                         # Monta dados para Aspa API
                         contact = montar_contact_object(primeiro_nome, numero)
@@ -1136,11 +1138,12 @@ def processar_lembretes(ciclo_numero=None):
                     data_formatada = formatar_data_brasileira(data_agenda)
                     procedimentos_texto = obter_procedimentos_texto(ag)
                     
-                    numero_normalizado = normalizar_numero_para_comparacao(numero)
-                    numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
-                    if numero_normalizado != numero_teste_normalizado:
-                        total_ignorados += 1
-                        continue
+                    if NUMERO_TESTE:
+                        numero_normalizado = normalizar_numero_para_comparacao(numero)
+                        numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
+                        if numero_normalizado != numero_teste_normalizado:
+                            total_ignorados += 1
+                            continue
                     
                     contact = montar_contact_object(primeiro_nome, numero)
                     params = config_selecionada["params_builder"](data_formatada, hora_agenda, procedimentos_texto)
