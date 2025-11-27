@@ -32,6 +32,8 @@ ASPA_TEMPLATE_CANCELAMENTO = os.getenv("CANCELAMENTO_MODEL_NAME")
 # Lembretes (24h antes)
 ASPA_TEMPLATE_LEMBRETE_PADRAO = os.getenv("LEMBRETE_PADRAO_MODEL_NAME")
 ASPA_TEMPLATE_LEMBRETE_DEPILACAO = os.getenv("LEMBRETE_DEPILACAO_MODEL_NAME")
+ASPA_TEMPLATE_LEMBRETE_USG = os.getenv("LEMBRETE_USG_MODEL_NAME")
+ASPA_TEMPLATE_LEMBRETE_DUOGLIDE = os.getenv("LEMBRETE_DUOGLIDE_MODEL_NAME")
 
 ASPA_CHANNEL_ID = os.getenv("ASPA_CHANNEL")
 
@@ -157,6 +159,51 @@ def eh_depilacao_laser(agendamento):
         else:
             nome = str(proc or "")
         if "depilação a laser" in nome.lower():
+            return True
+    return False
+
+
+def eh_usg_abdomen(agendamento):
+    """
+    Retorna True se algum procedimento for USG de abdômen.
+    """
+    procedimentos = (
+        agendamento.get("procedimentos") or
+        agendamento.get("procedimentos_com_obs") or
+        agendamento.get("procedimentosLista") or
+        []
+    )
+    if not isinstance(procedimentos, list):
+        return False
+    for proc in procedimentos:
+        if isinstance(proc, dict):
+            nome = proc.get("nome") or proc.get("nomeProcedimento") or ""
+        else:
+            nome = str(proc or "")
+        nome_lower = nome.lower()
+        if "usg" in nome_lower and ("abdomen" in nome_lower or "abdômen" in nome_lower):
+            return True
+    return False
+
+
+def eh_duoglide(agendamento):
+    """
+    Retorna True se algum procedimento mencionar Laser Duoglide.
+    """
+    procedimentos = (
+        agendamento.get("procedimentos") or
+        agendamento.get("procedimentos_com_obs") or
+        agendamento.get("procedimentosLista") or
+        []
+    )
+    if not isinstance(procedimentos, list):
+        return False
+    for proc in procedimentos:
+        if isinstance(proc, dict):
+            nome = proc.get("nome") or proc.get("nomeProcedimento") or ""
+        else:
+            nome = str(proc or "")
+        if "duoglide" in nome.lower():
             return True
     return False
 
@@ -316,6 +363,19 @@ def montar_params_aspa_lembrete_depilacao():
     """
     return {
         "content": {}
+    }
+
+
+def montar_params_aspa_lembrete_dia_hora(data_formatada, hora_agenda):
+    """
+    Monta params simples que usam apenas dia e horário.
+    """
+    hora_formatada = hora_agenda[:5] if hora_agenda and len(hora_agenda) >= 5 else (hora_agenda or "")
+    return {
+        "content": {
+            "1": data_formatada,
+            "2": hora_formatada
+        }
     }
 
 
@@ -910,36 +970,80 @@ def _obter_datetime_agendamento(ag):
 
 def processar_lembretes(ciclo_numero=None):
     """
-    Processa e envia lembretes 24h antes do atendimento.
+    Processa e envia lembretes configurados (USG, Duoglide, Depilação e padrão).
     
     - Apenas status que contenham 'CONFIRMADO'
-    - Se algum procedimento for Depilação a Laser → usa template de depilação
-    - Caso contrário → usa template de lembrete padrão
-    - Cada agendamento recebe no máximo UM lembrete (padrão OU depilação)
+    - Cada configuração define sua antecedência alvo (ex.: 72h para Duoglide, 24h para os demais)
+    - Evita duplicidade por tipo de lembrete usando a tabela processed
     """
-    if not ASPA_TEMPLATE_LEMBRETE_PADRAO and not ASPA_TEMPLATE_LEMBRETE_DEPILACAO:
-        # Lembretes não configurados
+    if not any([
+        ASPA_TEMPLATE_LEMBRETE_PADRAO,
+        ASPA_TEMPLATE_LEMBRETE_DEPILACAO,
+        ASPA_TEMPLATE_LEMBRETE_USG,
+        ASPA_TEMPLATE_LEMBRETE_DUOGLIDE,
+    ]):
         return
     
     ciclo_prefix = f"[CICLO #{ciclo_numero}] " if ciclo_numero else ""
     
     agora = datetime.datetime.now()
-    # Janela de busca: hoje até amanhã (+1 dia) - filtramos por hora no código
+    # Janela de busca cobre até 3 dias para alcançar lembretes de 72h (Duoglide)
     data_inicial = agora.date().isoformat()
-    data_final = (agora.date() + datetime.timedelta(days=1)).isoformat()
+    data_final = (agora.date() + datetime.timedelta(days=3)).isoformat()
     
     logger.info("=" * 70)
-    logger.info(f"{ciclo_prefix}🔔 INICIANDO PROCESSAMENTO DE LEMBRETES (24h antes)")
+    logger.info(f"{ciclo_prefix}🔔 INICIANDO PROCESSAMENTO DE LEMBRETES")
     logger.info(f"{ciclo_prefix}Período de busca: {data_inicial} a {data_final}")
     logger.info("=" * 70)
     
     from api_client import fetch_agendamentos
     from storage import is_processed, mark_processed
     
+    lembrete_configs = [
+        {
+            "nome": "lembrete_duoglide",
+            "descricao": "Laser Duoglide (72h)",
+            "template": ASPA_TEMPLATE_LEMBRETE_DUOGLIDE,
+            "predicate": eh_duoglide,
+            "delta_target": 72,
+            "tolerancia": 3,
+            "params_builder": lambda data_formatada, hora_agenda, procedimentos_texto: montar_params_aspa_lembrete_dia_hora(data_formatada, hora_agenda),
+        },
+        {
+            "nome": "lembrete_usg",
+            "descricao": "USG Abdômen (24h)",
+            "template": ASPA_TEMPLATE_LEMBRETE_USG,
+            "predicate": eh_usg_abdomen,
+            "delta_target": 24,
+            "tolerancia": 2,
+            "params_builder": lambda data_formatada, hora_agenda, procedimentos_texto: montar_params_aspa_lembrete_dia_hora(data_formatada, hora_agenda),
+        },
+        {
+            "nome": "lembrete_depilacao",
+            "descricao": "Depilação a Laser (24h)",
+            "template": ASPA_TEMPLATE_LEMBRETE_DEPILACAO,
+            "predicate": eh_depilacao_laser,
+            "delta_target": 24,
+            "tolerancia": 2,
+            "params_builder": lambda data_formatada, hora_agenda, procedimentos_texto: montar_params_aspa_lembrete_depilacao(),
+        },
+        {
+            "nome": "lembrete_padrao",
+            "descricao": "Padrão (24h)",
+            "template": ASPA_TEMPLATE_LEMBRETE_PADRAO,
+            "predicate": lambda ag: True,
+            "delta_target": 24,
+            "tolerancia": 2,
+            "params_builder": montar_params_aspa_lembrete_padrao,
+        },
+    ]
+    descricao_por_tipo = {cfg["nome"]: cfg["descricao"] for cfg in lembrete_configs}
+    
     pagina = 0
     total_lembretes_enviados = 0
     total_ja_processados = 0
     total_ignorados = 0
+    contagem_por_tipo = {}
     
     while True:
         try:
@@ -976,26 +1080,33 @@ def processar_lembretes(ciclo_numero=None):
                         continue
                     
                     delta = dt_ag - agora
-                    # Janela de ~24h (entre 23h e 25h para tolerância)
-                    if delta.total_seconds() < 23 * 3600 or delta.total_seconds() > 25 * 3600:
+                    delta_horas = delta.total_seconds() / 3600
+                    if delta_horas <= 0:
                         total_ignorados += 1
                         continue
                     
-                    # Define tipo de lembrete (depilação ou padrão)
-                    is_depilacao = eh_depilacao_laser(ag)
-                    if is_depilacao:
-                        tipo_lembrete = "lembrete_depilacao"
-                        template_key = ASPA_TEMPLATE_LEMBRETE_DEPILACAO
-                    else:
-                        tipo_lembrete = "lembrete_padrao"
-                        template_key = ASPA_TEMPLATE_LEMBRETE_PADRAO
+                    config_selecionada = None
+                    for cfg in lembrete_configs:
+                        template_cfg = cfg.get("template")
+                        if not template_cfg:
+                            continue
+                        predicate = cfg.get("predicate")
+                        if predicate and not predicate(ag):
+                            continue
+                        alvo = cfg.get("delta_target")
+                        tolerancia = cfg.get("tolerancia", 2)
+                        if alvo is not None and abs(delta_horas - alvo) > tolerancia:
+                            continue
+                        config_selecionada = cfg
+                        break
                     
-                    if not template_key:
-                        # Template não configurado, ignora
+                    if not config_selecionada:
                         total_ignorados += 1
                         continue
                     
-                    # Evita duplicidade
+                    tipo_lembrete = config_selecionada["nome"]
+                    template_key = config_selecionada["template"]
+                    
                     if is_processed(ag_id, tipo=tipo_lembrete):
                         total_ja_processados += 1
                         continue
@@ -1025,7 +1136,6 @@ def processar_lembretes(ciclo_numero=None):
                     data_formatada = formatar_data_brasileira(data_agenda)
                     procedimentos_texto = obter_procedimentos_texto(ag)
                     
-                    # TESTE: respeita filtro de número de teste
                     numero_normalizado = normalizar_numero_para_comparacao(numero)
                     numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
                     if numero_normalizado != numero_teste_normalizado:
@@ -1033,17 +1143,10 @@ def processar_lembretes(ciclo_numero=None):
                         continue
                     
                     contact = montar_contact_object(primeiro_nome, numero)
-                    if is_depilacao:
-                        params = montar_params_aspa_lembrete_depilacao()
-                    else:
-                        params = montar_params_aspa_lembrete_padrao(
-                            data_formatada,
-                            hora_agenda,
-                            procedimentos_texto,
-                        )
+                    params = config_selecionada["params_builder"](data_formatada, hora_agenda, procedimentos_texto)
                     
                     logger.info(
-                        f"{ciclo_prefix}🔔 Enviando lembrete ({'depilação' if is_depilacao else 'padrão'}) para {numero}\n"
+                        f"{ciclo_prefix}🔔 Enviando lembrete ({descricao_por_tipo.get(tipo_lembrete, tipo_lembrete)}) para {numero}\n"
                         f"   ID: {ag_id}\n"
                         f"   Data/Hora: {data_formatada} às {hora_agenda}\n"
                         f"   Procedimentos: {procedimentos_texto}\n"
@@ -1067,6 +1170,7 @@ def processar_lembretes(ciclo_numero=None):
                             id_tipo_consulta=ag.get("idTipoConsulta"),
                         )
                         total_lembretes_enviados += 1
+                        contagem_por_tipo[tipo_lembrete] = contagem_por_tipo.get(tipo_lembrete, 0) + 1
                         logger.info(
                             f"{ciclo_prefix}✅ Lembrete enviado e marcado como processado ({tipo_lembrete})\n"
                             f"   ID: {ag_id}\n"
@@ -1094,6 +1198,14 @@ def processar_lembretes(ciclo_numero=None):
                 break
     
     logger.info(f"{ciclo_prefix}🔔 LEMBRETES - enviados: {total_lembretes_enviados}, já processados: {total_ja_processados}, ignorados: {total_ignorados}")
+    if contagem_por_tipo:
+        logger.info(f"{ciclo_prefix}   Detalhe por tipo:")
+        for cfg in lembrete_configs:
+            tipo = cfg["nome"]
+            if tipo in contagem_por_tipo:
+                logger.info(
+                    f"{ciclo_prefix}     - {descricao_por_tipo.get(tipo, tipo)}: {contagem_por_tipo[tipo]}"
+                )
 
 if __name__ == "__main__":
     init_db()
