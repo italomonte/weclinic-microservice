@@ -16,7 +16,7 @@ import datetime
 import logging
 import os
 from api_client import fetch_agendamentos
-from storage import init_db, is_processed, mark_processed
+from storage import init_db, is_processed, mark_processed, get_processed_data
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -65,6 +65,7 @@ def inicializar_banco(data_inicial=None, data_final=None):
     total_marcados_agendamentos = 0
     total_marcados_cancelamentos = 0
     total_ja_existentes = 0
+    total_reagendamentos_atualizados = 0
     
     while True:
         try:
@@ -114,13 +115,45 @@ def inicializar_banco(data_inicial=None, data_final=None):
                         # Se não é cancelado nem confirmado, marca como agendamento por padrão
                         tipo_processamento = 'agendamento'
                     
+                    id_tipo_consulta = ag.get("idTipoConsulta")
+                    
                     # Verifica se já foi processado para este tipo
                     if is_processed(ag_id, tipo=tipo_processamento):
-                        total_ja_existentes += 1
-                        logger.debug(f"ID {ag_id} (tipo: {tipo_processamento}) já estava marcado como processado")
+                        # Se já foi processado, verifica se é um reagendamento (data/hora diferente)
+                        if tipo_processamento == 'agendamento' and data_agenda and hora_agenda:
+                            data_anterior, hora_anterior, id_tipo_consulta_anterior = get_processed_data(ag_id, tipo='agendamento')
+                            
+                            # Normaliza data e hora atual para comparação
+                            data_atual_str = str(data_agenda).strip() if data_agenda else ""
+                            hora_atual_str = str(hora_agenda).strip() if hora_agenda else ""
+                            
+                            # Verifica se houve reagendamento (data ou hora diferentes)
+                            eh_reagendamento = False
+                            if data_anterior and hora_anterior:
+                                data_anterior_str = str(data_anterior)
+                                hora_anterior_str = str(hora_anterior)[:5]  # Apenas HH:MM para comparação
+                                hora_atual_comparacao = hora_atual_str[:5] if len(hora_atual_str) >= 5 else hora_atual_str
+                                
+                                if data_atual_str != data_anterior_str or hora_atual_comparacao != hora_anterior_str:
+                                    eh_reagendamento = True
+                            elif data_anterior is None or hora_anterior is None:
+                                # Se não tinha data/hora anterior salva, atualiza para garantir que fique salva
+                                mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda, id_tipo_consulta=id_tipo_consulta)
+                                logger.debug(f"ID {ag_id} atualizado com data/hora (não havia data/hora anterior salva)")
+                            
+                            if eh_reagendamento:
+                                # Atualiza data/hora para a mais recente, assim o sistema não detecta como reagendamento novo
+                                mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda, id_tipo_consulta=id_tipo_consulta)
+                                total_reagendamentos_atualizados += 1
+                                logger.info(f"🔄 Reagendamento detectado e atualizado - ID {ag_id} (data anterior: {data_anterior} {hora_anterior}, nova: {data_agenda} {hora_agenda})")
+                            else:
+                                total_ja_existentes += 1
+                                logger.debug(f"ID {ag_id} (tipo: {tipo_processamento}) já estava marcado como processado")
+                        else:
+                            total_ja_existentes += 1
+                            logger.debug(f"ID {ag_id} (tipo: {tipo_processamento}) já estava marcado como processado")
                     else:
                         # Marca como processado SEM enviar mensagem, mas salvando data/hora e id_tipo_consulta
-                        id_tipo_consulta = ag.get("idTipoConsulta")
                         mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda, id_tipo_consulta=id_tipo_consulta)
                         if tipo_processamento == 'cancelamento':
                             total_marcados_cancelamentos += 1
@@ -144,7 +177,7 @@ def inicializar_banco(data_inicial=None, data_final=None):
             # Log de progresso a cada 10 páginas
             if pagina % 10 == 0:
                 total_novos = total_marcados_agendamentos + total_marcados_cancelamentos
-                logger.info(f"Progresso: página {pagina}, {total_novos} novos marcados ({total_marcados_agendamentos} agendamentos, {total_marcados_cancelamentos} cancelamentos), {total_ja_existentes} já existentes")
+                logger.info(f"Progresso: página {pagina}, {total_novos} novos marcados ({total_marcados_agendamentos} agendamentos, {total_marcados_cancelamentos} cancelamentos), {total_reagendamentos_atualizados} reagendamentos atualizados, {total_ja_existentes} já existentes")
         
         except Exception as e:
             logger.error(f"Erro ao processar página {pagina}: {e}", exc_info=True)
@@ -158,9 +191,10 @@ def inicializar_banco(data_inicial=None, data_final=None):
     logger.info(f"Inicialização concluída!")
     logger.info(f"  - Agendamentos marcados: {total_marcados_agendamentos}")
     logger.info(f"  - Cancelamentos marcados: {total_marcados_cancelamentos}")
+    logger.info(f"  - Reagendamentos atualizados: {total_reagendamentos_atualizados}")
     logger.info(f"  - Total novos marcados: {total_novos}")
-    logger.info(f"  - IDs já existentes: {total_ja_existentes}")
-    logger.info(f"  - Total processado: {total_novos + total_ja_existentes}")
+    logger.info(f"  - IDs já existentes (sem mudanças): {total_ja_existentes}")
+    logger.info(f"  - Total processado: {total_novos + total_ja_existentes + total_reagendamentos_atualizados}")
     logger.info("=" * 60)
     logger.info("Agora o sistema só enviará mensagens para agendamentos, cancelamentos e reagendamentos NOVOS criados após esta inicialização.")
 

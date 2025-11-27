@@ -38,6 +38,9 @@ ASPA_CHANNEL_ID = os.getenv("ASPA_CHANNEL")
 # ID do tipo consulta (113784) - se idTipoConsulta for diferente, usa AGENDAMENTO_EXC_CONS_MODEL_NAME
 ID_TIPO_CONSULTA = 113784
 
+# Endereço padrão usado nas mensagens quando a API não enviar um endereço específico
+ENDERECO_PADRAO = "R. Das Ametistas, 74 - Nossa Sra. das Graças, Manaus - AM, 69053-590"
+
 
 def normalizar_numero_para_comparacao(numero):
     """
@@ -695,7 +698,7 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             ag.get("endereco_clinica") or
                             ag.get("endereco") or
                             ag.get("enderecoClinica") or
-                            ""
+                            ENDERECO_PADRAO
                         )
                         
                         # Formata número de telefone (remove caracteres não numéricos)
