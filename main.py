@@ -2,7 +2,7 @@ import datetime
 import logging
 import os
 from dotenv import load_dotenv
-from api_client import fetch_agendamentos
+from api_client import fetch_agendamentos, fetch_paciente
 from storage import init_db, is_processed, mark_processed, get_processed_data, clear_processed
 from sender import enviar_mensagem
 from templates import CONFIRMACAO, CANCELAMENTO, REAGENDAMENTO
@@ -78,6 +78,18 @@ def extrair_primeiro_nome(fullname):
         return ""
     partes = fullname.split()
     return partes[0] if partes else ""
+
+
+def extrair_dois_primeiros_nomes(fullname):
+    """
+    Extrai até dois primeiros nomes de um nome completo.
+    """
+    if not fullname:
+        return ""
+    partes = [p for p in str(fullname).split() if p]
+    if not partes:
+        return ""
+    return " ".join(partes[:2])
 
 
 def formatar_data_brasileira(data_str):
@@ -208,6 +220,52 @@ def eh_duoglide(agendamento):
     return False
 
 
+def obter_dados_paciente_para_contato(agendamento):
+    """
+    Busca dados do paciente (quando possível) para montar alias.
+    
+    - Usa idPaciente da agenda para chamar /paciente/{id}
+    - Alias: dois primeiros nomes do campo 'nome' do paciente
+    - Telefone SEMPRE vem do agendamento (não do cadastro do paciente)
+    """
+    id_paciente = agendamento.get("idPaciente") or agendamento.get("id_paciente")
+    alias = None
+    numero = obter_numero_paciente(agendamento)
+    
+    if not id_paciente:
+        # Sem idPaciente, tenta montar alias a partir do nome da agenda
+        nome_paciente = (
+            agendamento.get("paciente_nome") or
+            agendamento.get("nomePaciente") or
+            agendamento.get("primeiro_nome_do_paciente") or
+            agendamento.get("pacienteNome") or
+            ""
+        )
+        alias = extrair_dois_primeiros_nomes(nome_paciente) or extrair_primeiro_nome(nome_paciente)
+        return alias, numero
+    
+    try:
+        paciente = fetch_paciente(id_paciente)
+    except Exception as e:
+        logger.warning(f"Não foi possível buscar dados do paciente {id_paciente}: {e}")
+        # Fallback para nome da agenda
+        nome_paciente = (
+            agendamento.get("paciente_nome") or
+            agendamento.get("nomePaciente") or
+            agendamento.get("primeiro_nome_do_paciente") or
+            agendamento.get("pacienteNome") or
+            ""
+        )
+        alias = extrair_dois_primeiros_nomes(nome_paciente) or extrair_primeiro_nome(nome_paciente)
+        return alias, numero
+    
+    nome_completo = paciente.get("nome") or ""
+    alias = extrair_dois_primeiros_nomes(nome_completo) or extrair_primeiro_nome(nome_completo)
+    
+    # Telefone permanece o que veio do agendamento
+    return alias, numero
+
+
 def obter_numero_paciente(agendamento):
     """
     Extrai e sanitiza o telefone do paciente.
@@ -222,19 +280,20 @@ def obter_numero_paciente(agendamento):
     return "".join([c for c in str(numero) if c.isdigit()])
 
 
-def montar_contact_object(primeiro_nome, numero):
+def montar_contact_object(alias, numero):
     """
     Monta objeto contact para Aspa API.
     
     Args:
-        primeiro_nome: Primeiro nome do paciente (não usado, alias sempre será "Italo")
-        numero: Número de telefone (será formatado pela função _formatar_numero_aspa)
+        alias: Nome que será exibido no contato da Aspa (ex.: primeiros nomes do paciente)
+        numero: Número de telefone (será formatado pela Aspa API)
     
     Returns:
         Objeto contact com alias, phone, update
     """
+    alias_sanitizado = (alias or "").strip() or "Paciente"
     return {
-        "alias": "Italo",
+        "alias": alias_sanitizado,
         "phone": numero,
         "update": True
     }
@@ -762,8 +821,8 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             ENDERECO_PADRAO
                         )
                         
-                        # Formata número de telefone (remove caracteres não numéricos)
-                        numero = obter_numero_paciente(ag)
+                        # Busca alias e telefone atualizados do paciente (via /paciente/{id})
+                        alias_contato, numero = obter_dados_paciente_para_contato(ag)
                         
                         if not numero:
                             logger.warning(
@@ -804,7 +863,7 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                                 continue
                         
                         # Monta dados para Aspa API
-                        contact = montar_contact_object(primeiro_nome, numero)
+                        contact = montar_contact_object(alias_contato or primeiro_nome, numero)
                         
                         if eh_reagendamento:
                             # Reagendamento: procedimentos, data, hora, status, telefone
@@ -1130,7 +1189,7 @@ def processar_lembretes(ciclo_numero=None):
                         ag.get("hora_inicio") or
                         ""
                     )
-                    numero = obter_numero_paciente(ag)
+                    alias_contato, numero = obter_dados_paciente_para_contato(ag)
                     if not numero:
                         total_ignorados += 1
                         continue
@@ -1140,12 +1199,12 @@ def processar_lembretes(ciclo_numero=None):
                     
                     if NUMERO_TESTE:
                         numero_normalizado = normalizar_numero_para_comparacao(numero)
-                        numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
-                        if numero_normalizado != numero_teste_normalizado:
-                            total_ignorados += 1
-                            continue
+                    numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
+                    if numero_normalizado != numero_teste_normalizado:
+                        total_ignorados += 1
+                        continue
                     
-                    contact = montar_contact_object(primeiro_nome, numero)
+                    contact = montar_contact_object(alias_contato or primeiro_nome, numero)
                     params = config_selecionada["params_builder"](data_formatada, hora_agenda, procedimentos_texto)
                     
                     logger.info(
