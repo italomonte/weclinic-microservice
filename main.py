@@ -295,7 +295,7 @@ def montar_contact_object(alias, numero):
     return {
         "alias": alias_sanitizado,
         "phone": numero,
-        "update": True
+        "update": False
     }
 
 
