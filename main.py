@@ -1034,7 +1034,8 @@ def processar_lembretes(ciclo_numero=None):
     Processa e envia lembretes configurados (USG, Duoglide, Depilação e padrão).
     
     - Apenas status que contenham 'CONFIRMADO'
-    - Cada configuração define sua antecedência alvo (ex.: 72h para Duoglide, 24h para os demais)
+    - Lembretes são enviados apenas até às 10h da manhã do dia anterior ao agendamento
+    - Cada configuração define quantos dias antes enviar (ex.: 1 dia para 24h, 3 dias para 72h)
     - Evita duplicidade por tipo de lembrete usando a tabela processed
     """
     if not any([
@@ -1048,12 +1049,24 @@ def processar_lembretes(ciclo_numero=None):
     ciclo_prefix = f"[CICLO #{ciclo_numero}] " if ciclo_numero else ""
     
     agora = datetime.datetime.now()
+    hora_atual = agora.hour
+    
+    # Verifica se está antes das 10h da manhã
+    if hora_atual >= 10:
+        logger.info("=" * 70)
+        logger.info(f"{ciclo_prefix}🔔 PROCESSAMENTO DE LEMBRETES PULADO")
+        logger.info(f"{ciclo_prefix}Hora atual: {hora_atual:02d}:{agora.minute:02d}")
+        logger.info(f"{ciclo_prefix}Lembretes só são enviados até às 10h da manhã")
+        logger.info("=" * 70)
+        return
+    
     # Janela de busca cobre até 3 dias para alcançar lembretes de 72h (Duoglide)
     data_inicial = agora.date().isoformat()
     data_final = (agora.date() + datetime.timedelta(days=3)).isoformat()
     
     logger.info("=" * 70)
     logger.info(f"{ciclo_prefix}🔔 INICIANDO PROCESSAMENTO DE LEMBRETES")
+    logger.info(f"{ciclo_prefix}Hora atual: {hora_atual:02d}:{agora.minute:02d} (antes das 10h - OK para enviar)")
     logger.info(f"{ciclo_prefix}Período de busca: {data_inicial} a {data_final}")
     logger.info("=" * 70)
     
@@ -1063,38 +1076,34 @@ def processar_lembretes(ciclo_numero=None):
     lembrete_configs = [
         {
             "nome": "lembrete_duoglide",
-            "descricao": "Laser Duoglide (72h)",
+            "descricao": "Laser Duoglide (3 dias antes)",
             "template": ASPA_TEMPLATE_LEMBRETE_DUOGLIDE,
             "predicate": eh_duoglide,
-            "delta_target": 72,
-            "tolerancia": 3,
+            "dias_antes": 3,  # 3 dias antes = 72h antes
             "params_builder": lambda data_formatada, hora_agenda, procedimentos_texto: montar_params_aspa_lembrete_dia_hora(data_formatada, hora_agenda),
         },
         {
             "nome": "lembrete_usg",
-            "descricao": "USG Abdômen (24h)",
+            "descricao": "USG Abdômen (1 dia antes)",
             "template": ASPA_TEMPLATE_LEMBRETE_USG,
             "predicate": eh_usg_abdomen,
-            "delta_target": 24,
-            "tolerancia": 2,
+            "dias_antes": 1,  # 1 dia antes = 24h antes
             "params_builder": lambda data_formatada, hora_agenda, procedimentos_texto: montar_params_aspa_lembrete_dia_hora(data_formatada, hora_agenda),
         },
         {
             "nome": "lembrete_depilacao",
-            "descricao": "Depilação a Laser (24h)",
+            "descricao": "Depilação a Laser (1 dia antes)",
             "template": ASPA_TEMPLATE_LEMBRETE_DEPILACAO,
             "predicate": eh_depilacao_laser,
-            "delta_target": 24,
-            "tolerancia": 2,
+            "dias_antes": 1,  # 1 dia antes = 24h antes
             "params_builder": lambda data_formatada, hora_agenda, procedimentos_texto: montar_params_aspa_lembrete_depilacao(),
         },
         {
             "nome": "lembrete_padrao",
-            "descricao": "Padrão (24h)",
+            "descricao": "Padrão (1 dia antes)",
             "template": ASPA_TEMPLATE_LEMBRETE_PADRAO,
             "predicate": lambda ag: True,
-            "delta_target": 24,
-            "tolerancia": 2,
+            "dias_antes": 1,  # 1 dia antes = 24h antes
             "params_builder": montar_params_aspa_lembrete_padrao,
         },
     ]
@@ -1140,12 +1149,12 @@ def processar_lembretes(ciclo_numero=None):
                         total_ignorados += 1
                         continue
                     
-                    delta = dt_ag - agora
-                    delta_horas = delta.total_seconds() / 3600
-                    if delta_horas <= 0:
+                    # Verifica se o agendamento está no futuro
+                    if dt_ag <= agora:
                         total_ignorados += 1
                         continue
                     
+                    # Determina qual tipo de lembrete aplicar
                     config_selecionada = None
                     for cfg in lembrete_configs:
                         template_cfg = cfg.get("template")
@@ -1154,12 +1163,14 @@ def processar_lembretes(ciclo_numero=None):
                         predicate = cfg.get("predicate")
                         if predicate and not predicate(ag):
                             continue
-                        alvo = cfg.get("delta_target")
-                        tolerancia = cfg.get("tolerancia", 2)
-                        if alvo is not None and abs(delta_horas - alvo) > tolerancia:
-                            continue
-                        config_selecionada = cfg
-                        break
+                        
+                        # Verifica se o agendamento está na data correta (hoje + dias_antes)
+                        dias_antes = cfg.get("dias_antes", 1)
+                        data_alvo_lembrete = agora.date() + datetime.timedelta(days=dias_antes)
+                        
+                        if dt_ag.date() == data_alvo_lembrete:
+                            config_selecionada = cfg
+                            break
                     
                     if not config_selecionada:
                         total_ignorados += 1
@@ -1197,12 +1208,13 @@ def processar_lembretes(ciclo_numero=None):
                     data_formatada = formatar_data_brasileira(data_agenda)
                     procedimentos_texto = obter_procedimentos_texto(ag)
                     
+                    # TESTE: Verifica se é o número permitido para testes (só antes de enviar)
                     if NUMERO_TESTE:
                         numero_normalizado = normalizar_numero_para_comparacao(numero)
-                    numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
-                    if numero_normalizado != numero_teste_normalizado:
-                        total_ignorados += 1
-                        continue
+                        numero_teste_normalizado = normalizar_numero_para_comparacao(NUMERO_TESTE)
+                        if numero_normalizado != numero_teste_normalizado:
+                            total_ignorados += 1
+                            continue
                     
                     contact = montar_contact_object(alias_contato or primeiro_nome, numero)
                     params = config_selecionada["params_builder"](data_formatada, hora_agenda, procedimentos_texto)
