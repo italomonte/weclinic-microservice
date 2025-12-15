@@ -1144,6 +1144,12 @@ def processar_lembretes(ciclo_numero=None):
                         total_ignorados += 1
                         continue
                     
+                    # Ignora lembretes para agendamentos de executor específico
+                    id_executor = ag.get("idPessoaExecutor")
+                    if id_executor == 21430526:
+                        total_ignorados += 1
+                        continue
+                    
                     dt_ag = _obter_datetime_agendamento(ag)
                     if not dt_ag:
                         total_ignorados += 1
