@@ -79,6 +79,12 @@ def verificar_faltantes(data_inicial=None, data_final=None):
                     
                     total_encontrados += 1
                     
+                    # BLOQUEIO GLOBAL: Ignora TUDO para este executor específico
+                    id_executor = ag.get("idPessoaExecutor")
+                    if id_executor == 21430526:
+                        total_encontrados -= 1  # Ajusta contador se ignorar
+                        continue
+
                     # Verifica se está no banco (qualquer tipo)
                     # Precisamos verificar todos os tipos possíveis
                     no_banco = (

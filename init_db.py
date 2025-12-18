@@ -98,6 +98,13 @@ def inicializar_banco(data_inicial=None, data_final=None):
                     # Extrai status e dados do agendamento
                     status_texto = obter_status_agendamento(ag)
                     status_upper = status_texto.upper() if status_texto else ""
+                    
+                    # BLOQUEIO GLOBAL: Ignora TUDO para este executor específico
+                    id_executor = ag.get("idPessoaExecutor")
+                    if id_executor == 21430526:
+                        logger.debug(f"ID {ag_id} ignorado (Bloqueio Global Profissional 21430526)")
+                        continue
+
                     cancelamento_detectado = CANCELAMENTO_KEYWORD in status_upper
                     confirmado_detectado = CONFIRMADO_KEYWORD in status_upper
                     

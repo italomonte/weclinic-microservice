@@ -525,6 +525,13 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                     
                     status_texto = obter_status_agendamento(ag)
                     status_upper = status_texto.upper() if status_texto else ""
+                    
+                    # BLOQUEIO GLOBAL: Ignora TUDO para este executor específico
+                    id_executor = ag.get("idPessoaExecutor")
+                    if id_executor == 21430526:
+                        logger.debug(f"{ciclo_prefix}🚫 Agendamento {ag_id} ignorado (Bloqueio Global Profissional 21430526)")
+                        continue
+
                     cancelamento_detectado = CANCELAMENTO_KEYWORD in status_upper
                     confirmado_detectado = CONFIRMADO_KEYWORD in status_upper
 
@@ -1144,10 +1151,11 @@ def processar_lembretes(ciclo_numero=None):
                         total_ignorados += 1
                         continue
                     
-                    # Ignora lembretes para agendamentos de executor específico
+                    # BLOQUEIO GLOBAL: Ignora TUDO para este executor específico
                     id_executor = ag.get("idPessoaExecutor")
                     if id_executor == 21430526:
                         total_ignorados += 1
+                        logger.debug(f"{ciclo_prefix}🚫 Lembrete para agendamento {ag_id} ignorado (Bloqueio Global Profissional 21430526)")
                         continue
                     
                     dt_ag = _obter_datetime_agendamento(ag)
