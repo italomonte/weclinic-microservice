@@ -46,6 +46,7 @@ def run_forever():
             logger.info("")
             logger.info("🔄" + "=" * 68)
             logger.info(f"🔄 CICLO #{ciclo_numero} - {dt.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"🔄 Período: {data_inicial} a {data_final} (Ano: {hoje.year})")
             logger.info("🔄" + "=" * 68)
             
             processar_intervalo(data_inicial, data_final, ciclo_numero)

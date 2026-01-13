@@ -523,6 +523,18 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                         "N/A"
                     )
                     
+                    # PROTEÇÃO: Valida ano do agendamento para evitar processar datas antigas na virada do ano
+                    if data_agenda != "N/A":
+                        try:
+                            data_ag_obj = datetime.datetime.strptime(data_agenda, "%Y-%m-%d").date()
+                            ano_atual = datetime.date.today().year
+                            # Ignora agendamentos de anos anteriores (exceto dezembro/janeiro na transição)
+                            if data_ag_obj.year < ano_atual - 1:
+                                logger.debug(f"{ciclo_prefix}🚫 Agendamento {ag_id} ignorado (ano muito antigo: {data_ag_obj.year})")
+                                continue
+                        except (ValueError, TypeError):
+                            pass  # Se não conseguir parsear, continua normal
+                    
                     status_texto = obter_status_agendamento(ag)
                     status_upper = status_texto.upper() if status_texto else ""
                     
@@ -687,8 +699,28 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             hora_anterior_str = str(hora_anterior)[:5]  # Apenas HH:MM para comparação
                             hora_atual_comparacao = hora_atual_str[:5] if len(hora_atual_str) >= 5 else hora_atual_str
                             
+                            # PROTEÇÃO CRÍTICA: Verifica se as datas são realmente diferentes
+                            # e se a mudança é válida (não é apenas diferença de ano sem mudança real)
                             if data_atual_str != data_anterior_str or hora_atual_comparacao != hora_anterior_str:
-                                eh_reagendamento = True
+                                # Valida se a data atual não é muito antiga (proteção contra bugs)
+                                try:
+                                    data_atual_obj = datetime.datetime.strptime(data_atual_str, "%Y-%m-%d").date()
+                                    hoje_validacao = datetime.date.today()
+                                    
+                                    # Ignora reagendamentos para o passado (possível erro de dados)
+                                    if data_atual_obj < hoje_validacao:
+                                        logger.warning(
+                                            f"{ciclo_prefix}⚠️ Reagendamento ignorado (data no passado)\n"
+                                            f"   ID: {ag_id}\n"
+                                            f"   Data atual: {data_atual_str}\n"
+                                            f"   Data anterior: {data_anterior_str}\n"
+                                        )
+                                        continue
+                                    
+                                    eh_reagendamento = True
+                                except (ValueError, TypeError):
+                                    # Se não conseguir validar, assume que é reagendamento
+                                    eh_reagendamento = True
                         
                         # Verifica se mudou o tipo de consulta (apenas quando já existia um valor salvo)
                         # Isso evita tratar registros antigos (sem tipo salvo) como mudanças
@@ -1163,9 +1195,25 @@ def processar_lembretes(ciclo_numero=None):
                         total_ignorados += 1
                         continue
                     
-                    # Verifica se o agendamento está no futuro
+                    # PROTEÇÃO CRÍTICA: Verifica se o agendamento está no futuro
+                    # Essa verificação DEVE vir ANTES de qualquer outra para evitar loops infinitos
                     if dt_ag <= agora:
                         total_ignorados += 1
+                        continue
+                    
+                    # PROTEÇÃO: Ignora agendamentos muito distantes (mais de 1 ano)
+                    # Isso evita processar datas incorretas ou problemas de comparação
+                    data_limite_futuro = agora + datetime.timedelta(days=365)
+                    if dt_ag > data_limite_futuro:
+                        total_ignorados += 1
+                        logger.debug(f"{ciclo_prefix}Agendamento {ag_id} ignorado (data muito distante: {dt_ag})")
+                        continue
+                    
+                    # PROTEÇÃO: Verifica se o agendamento é do ano atual ou futuro
+                    # Isso evita processar agendamentos antigos na virada do ano
+                    if dt_ag.year < agora.year:
+                        total_ignorados += 1
+                        logger.debug(f"{ciclo_prefix}Agendamento {ag_id} ignorado (ano anterior: {dt_ag.year})")
                         continue
                     
                     # Determina qual tipo de lembrete aplicar
@@ -1182,7 +1230,9 @@ def processar_lembretes(ciclo_numero=None):
                         dias_antes = cfg.get("dias_antes", 1)
                         data_alvo_lembrete = agora.date() + datetime.timedelta(days=dias_antes)
                         
-                        if dt_ag.date() == data_alvo_lembrete:
+                        # CORREÇÃO CRÍTICA: Compara com ano explícito para evitar bugs na virada do ano
+                        # Exemplo: 2024-01-02 != 2025-01-02 (anos diferentes)
+                        if dt_ag.date() == data_alvo_lembrete and dt_ag.year == data_alvo_lembrete.year:
                             config_selecionada = cfg
                             break
                     
