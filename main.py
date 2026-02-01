@@ -3,7 +3,11 @@ import logging
 import os
 from dotenv import load_dotenv
 from api_client import fetch_agendamentos, fetch_paciente
-from storage import init_db, is_processed, mark_processed, get_processed_data, clear_processed
+from storage import (
+    init_db, is_processed, mark_processed, get_processed_data, clear_processed,
+    check_rate_limit, register_rate_limit, check_cycle_limit, increment_cycle_count,
+    reset_cycle_protection, is_processed_this_cycle, mark_processed_this_cycle
+)
 from sender import enviar_mensagem
 from templates import CONFIRMACAO, CANCELAMENTO, REAGENDAMENTO
 
@@ -42,6 +46,9 @@ ID_TIPO_CONSULTA = 113784
 
 # Endereço padrão usado nas mensagens quando a API não enviar um endereço específico
 ENDERECO_PADRAO = "R. Das Ametistas, 74 - Nossa Sra. das Graças, Manaus - AM, 69053-590"
+
+# PROTEÇÃO: Limite máximo de páginas para evitar loop infinito na paginação
+MAX_PAGINAS = int(os.getenv("MAX_PAGINAS", "50"))
 
 
 def normalizar_numero_para_comparacao(numero):
@@ -452,6 +459,9 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
     """
     ciclo_prefix = f"[CICLO #{ciclo_numero}] " if ciclo_numero else ""
     
+    # PROTEÇÃO: Reset do controle de ciclo no início de cada processamento
+    reset_cycle_protection()
+    
     logger.info("=" * 70)
     logger.info(f"{ciclo_prefix}🔍 INICIANDO BUSCA DE AGENDAMENTOS: {data_inicial} a {data_final}")
     logger.info("=" * 70)
@@ -467,8 +477,17 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
     total_cancelamentos_ja_processados = 0
     total_cancelamentos_sem_dados = 0
     total_cancelamentos_falha_envio = 0
+    total_bloqueado_rate_limit = 0
+    total_bloqueado_ciclo = 0
+    
+    # PROTEÇÃO: Conjunto de IDs já processados neste ciclo para evitar duplicatas
+    ids_processados_neste_ciclo = set()
     
     while True:
+        # PROTEÇÃO: Limite de paginação para evitar loop infinito
+        if pagina >= MAX_PAGINAS:
+            logger.warning(f"{ciclo_prefix}⚠️ LIMITE DE PAGINAÇÃO ATINGIDO ({MAX_PAGINAS} páginas)")
+            break
         try:
             resp = fetch_agendamentos(data_inicial, data_final, pagina=pagina)
             
@@ -499,6 +518,18 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                     ag_id = ag.get("id")
                     if ag_id is None:
                         logger.warning("Agendamento sem ID encontrado, ignorando")
+                        continue
+                    
+                    # PROTEÇÃO: Evita processar o mesmo ID duas vezes no mesmo ciclo
+                    if ag_id in ids_processados_neste_ciclo:
+                        logger.debug(f"{ciclo_prefix}⏭️ ID {ag_id} já processado neste ciclo, ignorando duplicata")
+                        continue
+                    ids_processados_neste_ciclo.add(ag_id)
+                    
+                    # PROTEÇÃO: Verifica se atingiu o limite de mensagens por ciclo
+                    if not check_cycle_limit():
+                        logger.warning(f"{ciclo_prefix}⚠️ LIMITE DE MENSAGENS POR CICLO ATINGIDO - Finalizando processamento")
+                        break
                         continue
                     
                     # Extrai informações básicas para log (antes de verificar processamento)
@@ -600,6 +631,17 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             )
                             continue
 
+                        # PROTEÇÃO: Verifica rate limit antes de enviar
+                        if not check_rate_limit(numero):
+                            total_bloqueado_rate_limit += 1
+                            logger.warning(
+                                f"{ciclo_prefix}⚠️ RATE LIMIT ATINGIDO para {numero}\n"
+                                f"   ID: {ag_id}\n"
+                                f"   Cancelamento não enviado (muitas mensagens em 1h)\n"
+                                f"{'='*70}\n"
+                            )
+                            continue
+
                         logger.info(
                             f"   📱 Telefone: {numero}\n"
                             f"   📋 Procedimentos: {procedimentos_texto}\n"
@@ -644,6 +686,8 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
 
                         if ok_cancel:
                             mark_processed(ag_id, tipo='cancelamento')
+                            register_rate_limit(numero)
+                            increment_cycle_count()
                             total_cancelamentos_notificados += 1
                             logger.info(
                                 f"{ciclo_prefix}✅ CANCELAMENTO NOTIFICADO\n"
@@ -871,6 +915,18 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             )
                             continue
                         
+                        # PROTEÇÃO: Verifica rate limit antes de enviar
+                        if not check_rate_limit(numero):
+                            total_bloqueado_rate_limit += 1
+                            tipo_msg = "reagendamento" if eh_reagendamento else "confirmação"
+                            logger.warning(
+                                f"{ciclo_prefix}⚠️ RATE LIMIT ATINGIDO para {numero}\n"
+                                f"   ID: {ag_id}\n"
+                                f"   {tipo_msg.capitalize()} não enviada (muitas mensagens em 1h)\n"
+                                f"{'='*70}\n"
+                            )
+                            continue
+                        
                         # Formata data para formato brasileiro (DD/MM/YYYY)
                         data_formatada = formatar_data_brasileira(data_agenda)
                         
@@ -963,6 +1019,8 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
                             tipo_processamento = 'agendamento'  # Sempre usa 'agendamento' para permitir detectar reagendamentos futuros
                             # id_tipo_consulta_atual já foi obtido anteriormente
                             mark_processed(ag_id, tipo=tipo_processamento, data_agenda=data_agenda, hora_agenda=hora_agenda, id_tipo_consulta=id_tipo_consulta_atual)
+                            register_rate_limit(numero)
+                            increment_cycle_count()
                             if cancelamento_previo:
                                 removidos = clear_processed(ag_id, tipo='cancelamento')
                                 if removidos:
@@ -1023,9 +1081,9 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
             logger.error(f"Erro ao processar página {pagina}: {e}", exc_info=True)
             # Continua para próxima página mesmo em caso de erro
             pagina += 1
-            # Limita número de tentativas para evitar loop infinito
-            if pagina > 100:
-                logger.error("Limite de páginas excedido, abortando")
+            # PROTEÇÃO: Usa constante MAX_PAGINAS em vez de número hardcoded
+            if pagina >= MAX_PAGINAS:
+                logger.error(f"Limite de páginas excedido ({MAX_PAGINAS}), abortando")
                 break
     
     logger.info("\n" + "=" * 70)
@@ -1043,6 +1101,11 @@ def processar_intervalo(data_inicial, data_final, ciclo_numero=None):
     logger.info(f"{ciclo_prefix}✅ Cancelamentos notificados nesta execução: {total_cancelamentos_notificados}")
     logger.info(f"{ciclo_prefix}⚠️ Cancelamentos ignorados por falta de dados: {total_cancelamentos_sem_dados}")
     logger.info(f"{ciclo_prefix}❌ Falhas ao enviar cancelamentos: {total_cancelamentos_falha_envio}")
+    logger.info("-" * 70)
+    logger.info(f"{ciclo_prefix}🛡️ PROTEÇÕES ATIVADAS:")
+    logger.info(f"{ciclo_prefix}   └─ Bloqueados por rate limit: {total_bloqueado_rate_limit}")
+    logger.info(f"{ciclo_prefix}   └─ IDs processados neste ciclo: {len(ids_processados_neste_ciclo)}")
+    logger.info(f"{ciclo_prefix}   └─ Páginas processadas: {pagina + 1}")
     logger.info("=" * 70 + "\n")
 
 
@@ -1152,9 +1215,18 @@ def processar_lembretes(ciclo_numero=None):
     total_lembretes_enviados = 0
     total_ja_processados = 0
     total_ignorados = 0
+    total_bloqueado_rate_limit = 0
     contagem_por_tipo = {}
     
+    # PROTEÇÃO: Conjunto de IDs já processados neste ciclo para evitar duplicatas
+    ids_processados_neste_ciclo = set()
+    
     while True:
+        # PROTEÇÃO: Limite de paginação para evitar loop infinito
+        if pagina >= MAX_PAGINAS:
+            logger.warning(f"{ciclo_prefix}⚠️ LIMITE DE PAGINAÇÃO ATINGIDO ({MAX_PAGINAS} páginas) para lembretes")
+            break
+        
         try:
             resp = fetch_agendamentos(data_inicial, data_final, pagina=pagina)
             if not resp:
@@ -1176,6 +1248,12 @@ def processar_lembretes(ciclo_numero=None):
                     ag_id = ag.get("id")
                     if ag_id is None:
                         continue
+                    
+                    # PROTEÇÃO: Evita processar o mesmo ID duas vezes no mesmo ciclo
+                    if ag_id in ids_processados_neste_ciclo:
+                        logger.debug(f"{ciclo_prefix}⏭️ ID {ag_id} já processado neste ciclo de lembretes")
+                        continue
+                    ids_processados_neste_ciclo.add(ag_id)
                     
                     status_texto = obter_status_agendamento(ag)
                     status_upper = status_texto.upper() if status_texto else ""
@@ -1269,6 +1347,16 @@ def processar_lembretes(ciclo_numero=None):
                         total_ignorados += 1
                         continue
                     
+                    # PROTEÇÃO: Verifica rate limit antes de enviar
+                    if not check_rate_limit(numero):
+                        total_bloqueado_rate_limit += 1
+                        logger.warning(
+                            f"{ciclo_prefix}⚠️ RATE LIMIT ATINGIDO para {numero}\n"
+                            f"   ID: {ag_id}\n"
+                            f"   Lembrete não enviado (muitas mensagens em 1h)\n"
+                        )
+                        continue
+                    
                     data_formatada = formatar_data_brasileira(data_agenda)
                     procedimentos_texto = obter_procedimentos_texto(ag)
                     
@@ -1307,6 +1395,8 @@ def processar_lembretes(ciclo_numero=None):
                             hora_agenda=hora_agenda,
                             id_tipo_consulta=ag.get("idTipoConsulta"),
                         )
+                        register_rate_limit(numero)
+                        increment_cycle_count()
                         total_lembretes_enviados += 1
                         contagem_por_tipo[tipo_lembrete] = contagem_por_tipo.get(tipo_lembrete, 0) + 1
                         logger.info(
@@ -1331,11 +1421,12 @@ def processar_lembretes(ciclo_numero=None):
         except Exception as e:
             logger.error(f"{ciclo_prefix}Erro ao processar lembretes na página {pagina}: {e}", exc_info=True)
             pagina += 1
-            if pagina > 100:
-                logger.error(f"{ciclo_prefix}Limite de páginas excedido ao processar lembretes, abortando")
+            if pagina >= MAX_PAGINAS:
+                logger.error(f"{ciclo_prefix}Limite de páginas excedido ({MAX_PAGINAS}) ao processar lembretes, abortando")
                 break
     
     logger.info(f"{ciclo_prefix}🔔 LEMBRETES - enviados: {total_lembretes_enviados}, já processados: {total_ja_processados}, ignorados: {total_ignorados}")
+    logger.info(f"{ciclo_prefix}   └─ Bloqueados por rate limit: {total_bloqueado_rate_limit}")
     if contagem_por_tipo:
         logger.info(f"{ciclo_prefix}   Detalhe por tipo:")
         for cfg in lembrete_configs:

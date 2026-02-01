@@ -4,7 +4,7 @@ import datetime
 from datetime import datetime as dt
 from dotenv import load_dotenv
 import logging
-from storage import init_db
+from storage import init_db, reset_cycle_protection
 from main import processar_intervalo, processar_lembretes
 
 load_dotenv()
@@ -39,6 +39,10 @@ def run_forever():
     while True:
         try:
             ciclo_numero += 1
+            
+            # PROTEÇÃO: Reset de proteções de ciclo ANTES de processar
+            reset_cycle_protection()
+            
             hoje = datetime.date.today()
             data_inicial = hoje.isoformat()
             data_final = (hoje + datetime.timedelta(days=DAYS_AHEAD)).isoformat()
